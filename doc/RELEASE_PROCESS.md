@@ -1,8 +1,8 @@
 # draw.io Desktop Release Process
 
-**Document ID:** REL-PROC-DESKTOP-001  
-**Version:** 1.0  
-**Last Updated:** 2026-01-02
+**Document ID:** REL-PROC-DESKTOP-001<br>
+**Version:** 1.1<br>
+**Last Updated:** 2026-03-25<br>
 **Owner:** Engineering Team
 
 ---
@@ -24,7 +24,7 @@ Tooling versions are pinned in the GitHub Actions workflows to ensure reproducib
 | Tool | Version | Controlled In |
 |------|---------|---------------|
 | Node.js | 24.x (LTS) | `.github/workflows/*.yml` |
-| npm | (bundled with Node) | — |
+| npm | (bundled with Node) | - |
 
 > **Note:** npm is bundled with Node.js, ensuring consistent versions across environments.
 
@@ -56,11 +56,12 @@ The `prepare-release` workflow automates:
 - Running `npm audit` and failing on critical/high vulnerabilities
 - Running `npm outdated` for review
 - Committing changes and creating version tag
-- Uploading audit evidence as artifacts
+- Packaging security evidence into a structured artifact
+- Uploading the security evidence artifact
 
 **To trigger:**
 
-1. Go to Actions → "Prepare Release"
+1. Go to Actions -> "Prepare Release"
 2. Click "Run workflow"
 3. Enter:
    - **version:** The release version (e.g., `29.0.4`)
@@ -69,43 +70,44 @@ The `prepare-release` workflow automates:
 
 **What happens:**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Workflow: prepare-release                                       │
-├─────────────────────────────────────────────────────────────────┤
-│  1. Validate version format (X.Y.Z)                              │
-│  2. Checkout with submodules (recursive)                         │
-│  3. Setup Node.js 24.x                                          │
-│  4. Update drawio submodule → target ref                         │
-│     └── Update nested submodules (recursive)                     │
-│  5. Update package.json version                                  │
-│  6. npm ci                                                       │
-│  7. npm audit → FAIL if critical/high vulns                      │
-│  8. npm outdated → report only                                  │
-│  9. Upload evidence artifacts                                    │
-│ 10. Commit + push                                                │
-│ 11. Create + push tag v{version}                                 │
-│ 12. Build workflows trigger automatically                        │
-└─────────────────────────────────────────────────────────────────┘
+```text
++-----------------------------------------------------------------+
+| Workflow: prepare-release                                       |
++-----------------------------------------------------------------+
+| 1. Validate version format (X.Y.Z)                              |
+| 2. Checkout with submodules (recursive)                         |
+| 3. Setup Node.js 24.x                                           |
+| 4. Update drawio submodule -> target ref                        |
+|    \-> Update nested submodules (recursive)                     |
+| 5. Update package.json version                                  |
+| 6. npm ci                                                       |
+| 7. npm audit -> FAIL if critical/high vulns                     |
+| 8. npm outdated -> report only                                  |
+| 9. Package + upload security evidence artifact                  |
+| 10. Commit + push                                               |
+| 11. Create + push tag v{version}                                |
+| 12. Build workflows trigger automatically                       |
++-----------------------------------------------------------------+
 ```
 
 **Evidence produced:**
 - Workflow run log (retained by GitHub)
-- `release-evidence-v{VERSION}` artifact containing:
-  - `audit-results.json`
-  - `audit-report.txt`
-  - `outdated-report.txt`
+- `security-evidence-pack-v{VERSION}` artifact containing:
+  - `release/release-notes.md`
+  - `scans/npm/audit-results.json`
+  - `scans/npm/audit-report.txt`
+  - `scans/npm/outdated-report.txt`
 - Job summary with version details and audit results
 
 ### 4.2 Pre-Release Verification
 
 Before triggering the workflow:
 
-| ✓ | Item |
+| Check | Item |
 |---|------|
-| ☐ | Release scope documented (what's included) |
-| ☐ | All feature changes merged to dev branch |
-| ☐ | Target drawio ref exists and is tested |
+| [ ] | Release scope documented (what's included) |
+| [ ] | All feature changes merged to dev branch |
+| [ ] | Target drawio ref exists and is tested |
 
 ### 4.3 Monitor Build
 
@@ -133,12 +135,12 @@ After all build workflows complete successfully:
 
 Before publishing, the Reviewer verifies:
 
-| ✓ | Check |
+| Check | Requirement |
 |---|-------|
-| ☐ | Workflow completed successfully |
-| ☐ | npm audit shows no critical/high vulnerabilities |
-| ☐ | Build workflows passed for all platforms |
-| ☐ | Test cases passed (Section 6) |
+| [ ] | Workflow completed successfully |
+| [ ] | npm audit shows no critical/high vulnerabilities |
+| [ ] | Build workflows passed for all platforms |
+| [ ] | Test cases passed (Section 6) |
 
 | | Name | Date |
 |---|------|------|
@@ -157,26 +159,26 @@ Run against the built application before publishing.
 
 | ID | Test | Expected | Pass |
 |----|------|----------|------|
-| T01 | Launch application | Main window displays | ☐ |
-| T02 | Create new diagram | Blank canvas opens | ☐ |
-| T03 | Add shapes | Shapes render, move, resize | ☐ |
-| T04 | Save file | Saves without error | ☐ |
-| T05 | Open file | Displays correctly | ☐ |
-| T06 | Help > About | Shows correct version | ☐ |
+| T01 | Launch application | Main window displays | [ ] |
+| T02 | Create new diagram | Blank canvas opens | [ ] |
+| T03 | Add shapes | Shapes render, move, resize | [ ] |
+| T04 | Save file | Saves without error | [ ] |
+| T05 | Open file | Displays correctly | [ ] |
+| T06 | Help > About | Shows correct version | [ ] |
 
 ### Standard
 
 | ID | Test | Expected | Pass |
 |----|------|----------|------|
-| T07 | Export PNG/PDF/SVG | Valid output | ☐ |
-| T08 | Undo/Redo | Actions reverse | ☐ |
+| T07 | Export PNG/PDF/SVG | Valid output | [ ] |
+| T08 | Undo/Redo | Actions reverse | [ ] |
 
 ### Security
 
 | ID | Check | Method | Pass |
 |----|-------|--------|------|
-| S01 | No external scripts | DevTools Network tab | ☐ |
-| S02 | No data exfiltration | Monitor during save | ☐ |
+| S01 | No external scripts | DevTools Network tab | [ ] |
+| S02 | No data exfiltration | Monitor during save | [ ] |
 
 **Tested by:** _______________  **Date:** _______________
 
@@ -235,7 +237,7 @@ Evidence is automatically retained:
 | Evidence | Location | Retention |
 |----------|----------|-----------|
 | Workflow logs | GitHub Actions | 90 days (GitHub default) |
-| Audit artifacts | Actions → Artifacts | 365 days (configured) |
+| Security evidence artifact | Actions artifacts | 365 days (configured) |
 | Release assets | GitHub Releases | Permanent |
 | Git tags/commits | Repository | Permanent |
 
@@ -247,7 +249,7 @@ For audits requiring longer retention, download artifacts to secure storage.
 
 ### npm audit fails (critical/high vulnerabilities)
 
-1. Review `audit-report.txt` in workflow artifacts
+1. Review `scans/npm/audit-report.txt` in the security evidence artifact
 2. Options:
    - Run `npm audit fix` locally, commit, re-run workflow
    - If unfixable, assess risk and document exception
@@ -271,4 +273,5 @@ For audits requiring longer retention, download artifacts to secure storage.
 
 | Version | Date       | Author      | Changes |
 |---------|------------|-------------|---------|
+| 1.1     | 2026.03.25 | N Castro    | Update security evidence artifact structure and packaging |
 | 1.0     | 2026.01.02 | D Benson    | Initial release |

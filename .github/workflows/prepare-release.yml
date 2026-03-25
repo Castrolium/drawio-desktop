@@ -40,6 +40,9 @@ jobs:
             exit 1
           fi
           echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          echo "SECURITY_EVIDENCE_ARTIFACT=security-evidence-pack-v${{ inputs.version }}" >> $GITHUB_ENV
+          echo "SECURITY_EVIDENCE_STAGING_DIR=$RUNNER_TEMP/security-evidence-artifacts" >> $GITHUB_ENV
+          echo "SECURITY_EVIDENCE_DIR=$RUNNER_TEMP/security-evidence-artifacts/security-evidence-pack-v${{ inputs.version }}" >> $GITHUB_ENV
           
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -153,9 +156,19 @@ jobs:
         continue-on-error: true
         run: |
           echo "## npm audit results" >> $GITHUB_STEP_SUMMARY
+          echo "AUDIT_FAILED=true" >> $GITHUB_ENV
           
-          # Run audit and capture output
-          npm audit --json > audit-results.json 2>&1 || true
+          # Run audit and keep the JSON output parseable for later packaging/validation.
+          if npm audit --json > audit-results.json; then
+            AUDIT_EXIT=0
+          else
+            AUDIT_EXIT=$?
+          fi
+
+          if ! jq empty audit-results.json >/dev/null 2>&1; then
+            echo "::error::npm audit did not produce valid JSON output"
+            exit 1
+          fi
           
           # Parse results
           CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' audit-results.json)
@@ -176,7 +189,6 @@ jobs:
           # Fail if critical or high vulnerabilities
           if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
             echo "::error::Security vulnerabilities found: $CRITICAL critical, $HIGH high"
-            echo "AUDIT_FAILED=true" >> $GITHUB_ENV
           else
             echo "AUDIT_FAILED=false" >> $GITHUB_ENV
           fi
@@ -190,15 +202,21 @@ jobs:
           
           npm outdated > outdated-report.txt 2>&1 || true
           
-      - name: Upload audit artifacts
+      - name: Package security evidence
+        run: |
+          rm -rf "${{ env.SECURITY_EVIDENCE_STAGING_DIR }}"
+          npm run package-security-evidence -- --version "${{ env.VERSION }}" --output-dir "${{ env.SECURITY_EVIDENCE_STAGING_DIR }}"
+
+          echo "## Security Evidence Artifact" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Artifact: \`${{ env.SECURITY_EVIDENCE_ARTIFACT }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Structure: \`release/\`, \`scans/npm/\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload security evidence artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-evidence-v${{ env.VERSION }}
-          path: |
-            audit-results.json
-            audit-report.txt
-            outdated-report.txt
-            release-notes.md
+          name: ${{ env.SECURITY_EVIDENCE_ARTIFACT }}
+          path: ${{ env.SECURITY_EVIDENCE_STAGING_DIR }}
           retention-days: 365
           
       - name: Fail if audit has issues
@@ -218,6 +236,7 @@ jobs:
           echo "| Electron | ${{ env.ELECTRON_VERSION }} |" >> $GITHUB_STEP_SUMMARY
           echo "| drawio ref | ${{ env.DRAWIO_REF }} |" >> $GITHUB_STEP_SUMMARY
           echo "| drawio commit | ${{ env.DRAWIO_COMMIT }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security evidence artifact | ${{ env.SECURITY_EVIDENCE_ARTIFACT }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node.js | $(node --version) |" >> $GITHUB_STEP_SUMMARY
           echo "| npm | $(npm --version) |" >> $GITHUB_STEP_SUMMARY
           echo "| Dry run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
