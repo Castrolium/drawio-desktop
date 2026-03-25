@@ -88,11 +88,29 @@ const requiredFileValidators = new Map([
 	['sbom.cdx.json', validateSbomFile]
 ]);
 
+async function resolveVersion(providedVersion, workspaceDir)
+{
+	if (providedVersion && typeof providedVersion === 'string')
+	{
+		return providedVersion;
+	}
+
+	const packageJsonPath = path.join(workspaceDir, 'package.json');
+	const packageJson = await parseRequiredJsonFile(packageJsonPath, 'package.json');
+
+	if (!packageJson?.version || typeof packageJson.version !== 'string')
+	{
+		throw new Error('Missing required option: version');
+	}
+
+	return packageJson.version;
+}
+
 export async function packageSecurityEvidence(options = {})
 {
-	const version = options.version;
 	const workspaceDir = path.resolve(options.workspaceDir || process.cwd());
 	const outputDir = path.resolve(options.outputDir || process.cwd());
+	const version = await resolveVersion(options.version, workspaceDir);
 	const artifactName = getSecurityEvidenceArtifactName(version);
 	const artifactDir = path.join(outputDir, artifactName);
 	const packagedFiles = [];
