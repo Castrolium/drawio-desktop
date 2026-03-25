@@ -1,7 +1,7 @@
 # draw.io Desktop Release Process
 
 **Document ID:** REL-PROC-DESKTOP-001<br>
-**Version:** 1.1<br>
+**Version:** 1.2<br>
 **Last Updated:** 2026-03-25<br>
 **Owner:** Engineering Team
 
@@ -53,6 +53,7 @@ When updating tooling versions:
 The `prepare-release` workflow automates:
 - Updating drawio submodule to target ref (with recursive submodule init)
 - Updating version in package.json
+- Generating a CycloneDX JSON SBOM for the desktop npm project
 - Running `npm audit` and failing on critical/high vulnerabilities
 - Running `npm outdated` for review
 - Committing changes and creating version tag
@@ -80,13 +81,14 @@ The `prepare-release` workflow automates:
 | 4. Update drawio submodule -> target ref                        |
 |    \-> Update nested submodules (recursive)                     |
 | 5. Update package.json version                                  |
-| 6. npm ci                                                       |
-| 7. npm audit -> FAIL if critical/high vulns                     |
-| 8. npm outdated -> report only                                  |
-| 9. Package + upload security evidence artifact                  |
-| 10. Commit + push                                               |
-| 11. Create + push tag v{version}                                |
-| 12. Build workflows trigger automatically                       |
+| 6. npm install                                                  |
+| 7. Generate SBOM (`sbom/sbom.cdx.json`)                         |
+| 8. npm audit -> FAIL if critical/high vulns                     |
+| 9. npm outdated -> report only                                  |
+| 10. Package + upload security evidence artifact                 |
+| 11. Commit + push                                               |
+| 12. Create + push tag v{version}                                |
+| 13. Build workflows trigger automatically                       |
 +-----------------------------------------------------------------+
 ```
 
@@ -97,6 +99,7 @@ The `prepare-release` workflow automates:
   - `scans/npm/audit-results.json`
   - `scans/npm/audit-report.txt`
   - `scans/npm/outdated-report.txt`
+  - `sbom/sbom.cdx.json`
 - Job summary with version details and audit results
 
 ### 4.2 Pre-Release Verification
@@ -138,6 +141,7 @@ Before publishing, the Reviewer verifies:
 | Check | Requirement |
 |---|-------|
 | [ ] | Workflow completed successfully |
+| [ ] | SBOM was generated and packaged as `sbom/sbom.cdx.json` |
 | [ ] | npm audit shows no critical/high vulnerabilities |
 | [ ] | Build workflows passed for all platforms |
 | [ ] | Test cases passed (Section 6) |
@@ -179,6 +183,7 @@ Run against the built application before publishing.
 |----|-------|--------|------|
 | S01 | No external scripts | DevTools Network tab | [ ] |
 | S02 | No data exfiltration | Monitor during save | [ ] |
+| S03 | Security evidence artifact contains a valid CycloneDX SBOM | Review `sbom/sbom.cdx.json` in the artifact | [ ] |
 
 **Tested by:** _______________  **Date:** _______________
 
@@ -255,6 +260,13 @@ For audits requiring longer retention, download artifacts to secure storage.
    - If unfixable, assess risk and document exception
    - Delay release until fix available
 
+### SBOM generation fails
+
+1. Review the `Generate SBOM` step log in the workflow run
+2. Confirm `npm install` completed successfully and `package-lock.json` was regenerated
+3. Validate that the generated file is a CycloneDX JSON document
+4. Fix the dependency or generator issue, then re-run the workflow
+
 ### Build fails
 
 1. Check workflow logs for error
@@ -273,5 +285,6 @@ For audits requiring longer retention, download artifacts to secure storage.
 
 | Version | Date       | Author      | Changes |
 |---------|------------|-------------|---------|
+| 1.2     | 2026.03.25 | N Castro    | Add mandatory CycloneDX SBOM generation to prepare-release |
 | 1.1     | 2026.03.25 | N Castro    | Update security evidence artifact structure and packaging |
 | 1.0     | 2026.01.02 | D Benson    | Initial release |
