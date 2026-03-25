@@ -8,14 +8,14 @@ export const requiredArtifactFiles =
 	{source: 'release-notes.md', destination: 'release/release-notes.md'},
 	{source: 'audit-results.json', destination: 'scans/npm/audit-results.json'},
 	{source: 'audit-report.txt', destination: 'scans/npm/audit-report.txt'},
-	{source: 'outdated-report.txt', destination: 'scans/npm/outdated-report.txt'}
+	{source: 'outdated-report.txt', destination: 'scans/npm/outdated-report.txt'},
+	{source: 'sbom.cdx.json', destination: 'sbom/sbom.cdx.json'}
 ];
 
 export const futureArtifactPaths =
 [
 	'summary/security-summary.html',
 	'scans/snyk/snyk-report.json',
-	'sbom/sbom.cdx.json',
 	'optional/security-summary.pdf',
 	'optional/metadata.json',
 	'optional/checksums.sha256'
@@ -55,18 +55,38 @@ async function assertRequiredFileExists(filePath, sourceName)
 	}
 }
 
-async function validateAuditResultsJson(filePath)
+async function parseRequiredJsonFile(filePath, sourceName)
 {
 	try
 	{
-		const auditJson = await readFile(filePath, 'utf8');
-		JSON.parse(auditJson);
+		const fileContents = await readFile(filePath, 'utf8');
+		return JSON.parse(fileContents);
 	}
 	catch (e)
 	{
-		throw new Error('Invalid JSON in required evidence file: audit-results.json');
+		throw new Error(`Invalid JSON in required evidence file: ${sourceName}`);
 	}
 }
+
+async function validateAuditResultsJson(filePath)
+{
+	await parseRequiredJsonFile(filePath, 'audit-results.json');
+}
+
+async function validateSbomFile(filePath)
+{
+	const sbomJson = await parseRequiredJsonFile(filePath, 'sbom.cdx.json');
+
+	if (sbomJson?.bomFormat !== 'CycloneDX')
+	{
+		throw new Error('Invalid SBOM format in required evidence file: sbom.cdx.json');
+	}
+}
+
+const requiredFileValidators = new Map([
+	['audit-results.json', validateAuditResultsJson],
+	['sbom.cdx.json', validateSbomFile]
+]);
 
 export async function packageSecurityEvidence(options = {})
 {
@@ -83,12 +103,14 @@ export async function packageSecurityEvidence(options = {})
 	{
 		const sourcePath = path.join(workspaceDir, file.source);
 		const destinationPath = path.join(artifactDir, file.destination);
-		
+
 		await assertRequiredFileExists(sourcePath, file.source);
-		
-		if (file.source === 'audit-results.json')
+
+		const validator = requiredFileValidators.get(file.source);
+
+		if (validator)
 		{
-			await validateAuditResultsJson(sourcePath);
+			await validator(sourcePath);
 		}
 		
 		await mkdir(path.dirname(destinationPath), {recursive: true});

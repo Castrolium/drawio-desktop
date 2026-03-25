@@ -107,6 +107,25 @@ jobs:
           rm -rf node_modules package-lock.json
           npm install
 
+      - name: Generate SBOM
+        run: |
+          npm run generate-sbom
+
+          if ! jq -e '.bomFormat == "CycloneDX"' sbom.cdx.json >/dev/null 2>&1; then
+            echo "::error::Generated SBOM is not a valid CycloneDX JSON document"
+            exit 1
+          fi
+
+          SBOM_SPEC_VERSION=$(jq -r '.specVersion // "unknown"' sbom.cdx.json)
+          SBOM_COMPONENT_COUNT=$(jq '(.components // []) | length' sbom.cdx.json)
+
+          echo "## SBOM" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- File: \`sbom/sbom.cdx.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Format: \`CycloneDX JSON\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Spec version: \`${SBOM_SPEC_VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Components: \`${SBOM_COMPONENT_COUNT}\`" >> $GITHUB_STEP_SUMMARY
+
       - name: Generate release notes
         run: |
           VERSION="${{ env.VERSION }}"
@@ -210,7 +229,7 @@ jobs:
           echo "## Security Evidence Artifact" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Artifact: \`${{ env.SECURITY_EVIDENCE_ARTIFACT }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Structure: \`release/\`, \`scans/npm/\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Structure: \`release/\`, \`scans/npm/\`, \`sbom/\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload security evidence artifact
         uses: actions/upload-artifact@v4
@@ -255,7 +274,7 @@ jobs:
           
           # Remove generated files that shouldn't be committed
           # (package-lock.json IS committed to lock electron version)
-          rm -f audit-results.json audit-report.txt outdated-report.txt release-notes.md
+          rm -f audit-results.json audit-report.txt outdated-report.txt release-notes.md sbom.cdx.json
           
           git add -A
           git commit -m "Prepare release v${{ env.VERSION }}

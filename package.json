@@ -11,6 +11,7 @@
   "scripts": {
     "start": "electron .",
     "sync": "node ./sync.cjs",
+    "generate-sbom": "node ./build/generate-sbom.mjs",
     "package-security-evidence": "node ./build/package-security-evidence.mjs",
     "test:security-evidence": "node --test ./build/package-security-evidence.test.mjs",
     "release-win": "electron-builder --config electron-builder-win.json --publish always",
