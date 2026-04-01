@@ -85,18 +85,20 @@ The `prepare-release` workflow automates:
 |    \-> Update nested submodules (recursive)                     |
 | 5. Update package.json version                                  |
 | 6. npm install                                                  |
-| 7. Export Snyk JSON report (`scans/snyk/snyk-report.json`)     |
+| 7. Run integration tests (`npm run test:security-evidence`)     |
+|    \-> Blocking quality gate for evidence pipeline              |
+| 8. Export Snyk JSON report (`scans/snyk/snyk-report.json`)     |
 |    \-> On technical failure, save `snyk-export-error.txt`       |
-| 8. Generate SBOM (`sbom/sbom.cdx.json`)                         |
-| 9. Generate release notes                                       |
-| 10. npm audit -> FAIL if critical/high vulns                    |
-| 11. npm outdated -> report only                                 |
-| 12. Generate HTML summary (`summary/security-summary.html`)     |
-| 13. Package + upload security evidence artifact                 |
-| 14. Enforce post-upload security gates                          |
-| 15. Commit + push                                               |
-| 16. Create + push tag v{version}                                |
-| 17. Build workflows trigger automatically                       |
+| 9. Generate SBOM (`sbom/sbom.cdx.json`)                         |
+| 10. Generate release notes                                      |
+| 11. npm audit -> FAIL if critical/high vulns                    |
+| 12. npm outdated -> report only                                 |
+| 13. Generate HTML summary (`summary/security-summary.html`)     |
+| 14. Package + upload security evidence artifact                 |
+| 15. Enforce post-upload security gates                          |
+| 16. Commit + push                                               |
+| 17. Create release PR                                           |
+| 18. Build workflows trigger after merge + tag                   |
 +-----------------------------------------------------------------+
 ```
 
