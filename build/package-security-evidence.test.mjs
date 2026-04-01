@@ -142,6 +142,64 @@ test('packages the current security evidence files into the expected structure',
 });
 
 test('uses the workspace package.json version when version option is omitted', async (t) =>
+<<<<<<< ours
+=======
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'package.json': JSON.stringify({version: '4.5.6'}),
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom()
+	});
+
+	const result = await packageSecurityEvidence({
+		workspaceDir,
+		outputDir
+	});
+
+	assert.equal(result.artifactName, 'security-evidence-pack-v4.5.6');
+});
+
+test('fails when version option is omitted and workspace package.json is missing', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom()
+	});
+
+	await assert.rejects(() => packageSecurityEvidence({
+		workspaceDir,
+		outputDir
+	}), /Missing required option: version \(provide --version or a valid workspace package\.json\)/);
+});
+
+test('fails when version option is omitted and workspace package.json has no version', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'package.json': JSON.stringify({name: 'drawio'}),
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom()
+	});
+
+	await assert.rejects(() => packageSecurityEvidence({
+		workspaceDir,
+		outputDir
+	}), /Missing required option: version \(workspace package\.json has no string version\)/);
+});
+
+test('fails when a required evidence file is missing', async (t) =>
+>>>>>>> theirs
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({

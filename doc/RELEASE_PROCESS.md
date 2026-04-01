@@ -136,6 +136,7 @@ Run this local sequence before triggering the release workflow to catch setup an
    - `npm install`
    - `npm run test:security-evidence`
 2. **Generate required inputs**
+<<<<<<< ours
    - Export `SNYK_TOKEN` in your shell before running Snyk locally
    - Run `snyk test --json-file-output=snyk-report.json`
    - `npm run generate-sbom`
@@ -161,11 +162,32 @@ Run this local sequence before triggering the release workflow to catch setup an
    - Check that output folder `security-evidence-pack-v{VERSION}` exists
    - Verify required files:
      - `summary/security-summary.html`
+=======
+   - `npm run generate-sbom`
+   - Prepare `release-notes.md` in repository root
+   - Capture npm scan outputs in repository root:
+     - `audit-results.json`
+     - `audit-report.txt`
+     - `outdated-report.txt`
+3. **Package artifact locally**
+   - `npm run package-security-evidence`
+   - By default, the script uses `package.json` version when `--version` is not provided
+4. **Troubleshoot failures**
+   - If packaging fails with `Missing required evidence file`, generate or copy the missing file to repository root
+   - If packaging fails with `Invalid JSON`, regenerate the referenced JSON file and validate syntax
+   - If packaging fails with `Invalid SBOM format`, regenerate SBOM and ensure `bomFormat` is `CycloneDX`
+5. **Confirm output structure**
+   - Check that output folder `security-evidence-pack-v{VERSION}` exists
+   - Verify required files:
+>>>>>>> theirs
      - `release/release-notes.md`
      - `scans/npm/audit-results.json`
      - `scans/npm/audit-report.txt`
      - `scans/npm/outdated-report.txt`
+<<<<<<< ours
      - `scans/snyk/snyk-report.json` or `scans/snyk/snyk-export-error.txt`
+=======
+>>>>>>> theirs
      - `sbom/sbom.cdx.json`
 
 ### 4.4 Monitor Build

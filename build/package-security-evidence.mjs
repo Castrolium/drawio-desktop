@@ -78,6 +78,21 @@ async function parseRequiredJsonFile(filePath, sourceName)
 	}
 }
 
+async function parseWorkspacePackageJson(workspaceDir)
+{
+	const packageJsonPath = path.join(workspaceDir, 'package.json');
+
+	try
+	{
+		const packageJsonContents = await readFile(packageJsonPath, 'utf8');
+		return JSON.parse(packageJsonContents);
+	}
+	catch (e)
+	{
+		throw new Error('Missing required option: version (provide --version or a valid workspace package.json)');
+	}
+}
+
 async function validateAuditResultsJson(filePath)
 {
 	await parseRequiredJsonFile(filePath, 'audit-results.json');
@@ -115,6 +130,7 @@ const requiredFileValidators = new Map([
 	['summary/security-summary.html', validateSecuritySummaryHtml]
 ]);
 
+<<<<<<< ours
 async function tryStat(filePath)
 {
 	try
@@ -175,6 +191,8 @@ async function packageAlternativeArtifactFileGroup(workspaceDir, artifactDir, fi
 	packagedFiles.push(normalizeRelativePath(selectedFile.destination));
 }
 
+=======
+>>>>>>> theirs
 async function resolveVersion(providedVersion, workspaceDir)
 {
 	if (providedVersion && typeof providedVersion === 'string')
@@ -182,12 +200,20 @@ async function resolveVersion(providedVersion, workspaceDir)
 		return providedVersion;
 	}
 
+<<<<<<< ours
 	const packageJsonPath = path.join(workspaceDir, 'package.json');
 	const packageJson = await parseRequiredJsonFile(packageJsonPath, 'package.json');
 
 	if (!packageJson?.version || typeof packageJson.version !== 'string')
 	{
 		throw new Error('Missing required option: version');
+=======
+	const packageJson = await parseWorkspacePackageJson(workspaceDir);
+
+	if (!packageJson?.version || typeof packageJson.version !== 'string')
+	{
+		throw new Error('Missing required option: version (workspace package.json has no string version)');
+>>>>>>> theirs
 	}
 
 	return packageJson.version;
