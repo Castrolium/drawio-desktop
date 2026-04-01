@@ -333,6 +333,28 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           
           npm outdated > outdated-report.txt 2>&1 || true
+
+      - name: Generate HTML security summary
+        run: |
+          npm run generate-security-summary -- \
+            --version "${{ env.VERSION }}" \
+            --repository "${{ github.server_url }}/${{ github.repository }}" \
+            --workflow-name "${{ github.workflow }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --git-ref "${{ github.ref }}" \
+            --git-commit "${{ github.sha }}" \
+            --drawio-ref "${{ env.DRAWIO_REF }}" \
+            --drawio-commit "${{ env.DRAWIO_COMMIT }}" \
+            --node-version "$(node --version)" \
+            --npm-version "$(npm --version)" \
+            --electron-version "${{ env.ELECTRON_VERSION }}" \
+            --generated-at "$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+
+          echo "## HTML Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- File: \`summary/security-summary.html\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Purpose: readable release context, evidence inventory, audit, Snyk, and SBOM overview" >> $GITHUB_STEP_SUMMARY
           
       - name: Package security evidence
         run: |
@@ -342,7 +364,7 @@ jobs:
           echo "## Security Evidence Artifact" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Artifact: \`${{ env.SECURITY_EVIDENCE_ARTIFACT }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Structure: \`release/\`, \`scans/npm/\`, \`scans/snyk/\`, \`sbom/\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Structure: \`summary/\`, \`release/\`, \`scans/npm/\`, \`scans/snyk/\`, \`sbom/\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload security evidence artifact
         uses: actions/upload-artifact@v4
@@ -399,6 +421,7 @@ jobs:
           # Remove generated files that shouldn't be committed
           # (package-lock.json IS committed to lock electron version)
           rm -f audit-results.json audit-report.txt outdated-report.txt release-notes.md sbom.cdx.json snyk-report.json snyk-export-error.txt
+          rm -rf summary
           
           git add -A
           git commit -m "Prepare release v${{ env.VERSION }}

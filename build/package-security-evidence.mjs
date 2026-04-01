@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 
 export const requiredArtifactFiles =
 [
+	{source: 'summary/security-summary.html', destination: 'summary/security-summary.html'},
 	{source: 'release-notes.md', destination: 'release/release-notes.md'},
 	{source: 'audit-results.json', destination: 'scans/npm/audit-results.json'},
 	{source: 'audit-report.txt', destination: 'scans/npm/audit-report.txt'},
@@ -25,7 +26,6 @@ export const requiredAlternativeArtifactFiles =
 
 export const futureArtifactPaths =
 [
-	'summary/security-summary.html',
 	'optional/security-summary.pdf',
 	'optional/metadata.json',
 	'optional/checksums.sha256'
@@ -98,10 +98,21 @@ async function validateSnykReportJson(filePath)
 	await parseRequiredJsonFile(filePath, 'snyk-report.json');
 }
 
+async function validateSecuritySummaryHtml(filePath)
+{
+	const fileContents = await readFile(filePath, 'utf8');
+
+	if (!fileContents.match(/<!DOCTYPE html>/i) || !fileContents.match(/<html[\s>]/i))
+	{
+		throw new Error('Invalid HTML in required evidence file: summary/security-summary.html');
+	}
+}
+
 const requiredFileValidators = new Map([
 	['audit-results.json', validateAuditResultsJson],
 	['sbom.cdx.json', validateSbomFile],
-	['snyk-report.json', validateSnykReportJson]
+	['snyk-report.json', validateSnykReportJson],
+	['summary/security-summary.html', validateSecuritySummaryHtml]
 ]);
 
 async function tryStat(filePath)

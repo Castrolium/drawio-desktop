@@ -1,7 +1,7 @@
 # draw.io Desktop Release Process
 
 **Document ID:** REL-PROC-DESKTOP-001<br>
-**Version:** 1.3<br>
+**Version:** 1.4<br>
 **Last Updated:** 2026-04-01<br>
 **Owner:** Engineering Team
 
@@ -58,6 +58,7 @@ The `prepare-release` workflow automates:
 - Generating a CycloneDX JSON SBOM for the desktop npm project
 - Running `npm audit` and failing on critical/high vulnerabilities
 - Running `npm outdated` for review
+- Generating a self-contained HTML security summary for the artifact
 - Committing changes and creating version tag
 - Packaging security evidence into a structured artifact
 - Uploading the security evidence artifact
@@ -87,19 +88,22 @@ The `prepare-release` workflow automates:
 | 7. Export Snyk JSON report (`scans/snyk/snyk-report.json`)     |
 |    \-> On technical failure, save `snyk-export-error.txt`       |
 | 8. Generate SBOM (`sbom/sbom.cdx.json`)                         |
-| 9. npm audit -> FAIL if critical/high vulns                     |
-| 10. npm outdated -> report only                                 |
-| 11. Package + upload security evidence artifact                 |
-| 12. Enforce post-upload security gates                          |
-| 13. Commit + push                                               |
-| 14. Create + push tag v{version}                                |
-| 15. Build workflows trigger automatically                       |
+| 9. Generate release notes                                       |
+| 10. npm audit -> FAIL if critical/high vulns                    |
+| 11. npm outdated -> report only                                 |
+| 12. Generate HTML summary (`summary/security-summary.html`)     |
+| 13. Package + upload security evidence artifact                 |
+| 14. Enforce post-upload security gates                          |
+| 15. Commit + push                                               |
+| 16. Create + push tag v{version}                                |
+| 17. Build workflows trigger automatically                       |
 +-----------------------------------------------------------------+
 ```
 
 **Evidence produced:**
 - Workflow run log (retained by GitHub)
 - `security-evidence-pack-v{VERSION}` artifact containing:
+  - `summary/security-summary.html`
   - `release/release-notes.md`
   - `scans/npm/audit-results.json`
   - `scans/npm/audit-report.txt`
@@ -141,17 +145,22 @@ Run this local sequence before triggering the release workflow to catch setup an
      - `audit-report.txt`
      - `outdated-report.txt`
      - `snyk-report.json`
-3. **Package artifact locally**
+3. **Generate HTML summary**
+   - `npm run generate-security-summary`
+   - By default, the script writes `summary/security-summary.html`
+4. **Package artifact locally**
    - `npm run package-security-evidence`
    - By default, the script uses `package.json` version when `--version` is not provided
-4. **Troubleshoot failures**
+5. **Troubleshoot failures**
    - If packaging fails with `Missing required evidence file`, generate or copy the missing file to repository root
    - If packaging fails with `Invalid JSON`, regenerate the referenced JSON file and validate syntax
    - If packaging fails with `Invalid SBOM format`, regenerate SBOM and ensure `bomFormat` is `CycloneDX`
+   - If summary generation fails, inspect the referenced evidence input and regenerate the missing or invalid file
    - If Snyk export fails technically, create or inspect `snyk-export-error.txt` and re-run after fixing the export issue
-5. **Confirm output structure**
+6. **Confirm output structure**
    - Check that output folder `security-evidence-pack-v{VERSION}` exists
    - Verify required files:
+     - `summary/security-summary.html`
      - `release/release-notes.md`
      - `scans/npm/audit-results.json`
      - `scans/npm/audit-report.txt`
@@ -188,6 +197,7 @@ Before publishing, the Reviewer verifies:
 | Check | Requirement |
 |---|-------|
 | [ ] | Workflow completed successfully |
+| [ ] | HTML summary is present as `summary/security-summary.html` |
 | [ ] | SBOM was generated and packaged as `sbom/sbom.cdx.json` |
 | [ ] | Snyk export is present as `scans/snyk/snyk-report.json` |
 | [ ] | npm audit shows no critical/high vulnerabilities |
@@ -233,6 +243,7 @@ Run against the built application before publishing.
 | S02 | No data exfiltration | Monitor during save | [ ] |
 | S03 | Security evidence artifact contains a valid CycloneDX SBOM | Review `sbom/sbom.cdx.json` in the artifact | [ ] |
 | S04 | Security evidence artifact contains a Snyk JSON export | Review `scans/snyk/snyk-report.json` in the artifact | [ ] |
+| S05 | Security evidence artifact contains the HTML summary | Review `summary/security-summary.html` in the artifact | [ ] |
 
 **Tested by:** _______________  **Date:** _______________
 
@@ -343,6 +354,7 @@ For audits requiring longer retention, download artifacts to secure storage.
 
 | Version | Date       | Author      | Changes |
 |---------|------------|-------------|---------|
+| 1.4     | 2026.04.01 | N Castro    | Add HTML security summary generation to the security evidence artifact |
 | 1.3     | 2026.04.01 | N Castro    | Add Snyk JSON export and post-upload enforcement to prepare-release |
 | 1.2     | 2026.03.25 | N Castro    | Add mandatory CycloneDX SBOM generation to prepare-release |
 | 1.1     | 2026.03.25 | N Castro    | Update security evidence artifact structure and packaging |
