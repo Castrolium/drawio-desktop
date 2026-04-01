@@ -94,6 +94,26 @@ test('packages the current security evidence files into the expected structure',
 	assert.equal(await readFile(sbomPath, 'utf8'), await readFile(path.join(workspaceDir, 'sbom.cdx.json'), 'utf8'));
 });
 
+test('uses the workspace package.json version when version option is omitted', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'package.json': JSON.stringify({version: '4.5.6'}),
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom()
+	});
+
+	const result = await packageSecurityEvidence({
+		workspaceDir,
+		outputDir
+	});
+
+	assert.equal(result.artifactName, 'security-evidence-pack-v4.5.6');
+});
+
 test('fails when a required evidence file is missing', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);

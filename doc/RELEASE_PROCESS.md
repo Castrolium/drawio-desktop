@@ -112,7 +112,37 @@ Before triggering the workflow:
 | [ ] | All feature changes merged to dev branch |
 | [ ] | Target drawio ref exists and is tested |
 
-### 4.3 Monitor Build
+### 4.3 Local Test-Run and Troubleshooting (First Pass)
+
+Run this local sequence before triggering the release workflow to catch setup and artifact issues early.
+
+1. **Validate dependencies and scripts**
+   - `npm install`
+   - `npm run test:security-evidence`
+2. **Generate required inputs**
+   - `npm run generate-sbom`
+   - Prepare `release-notes.md` in repository root
+   - Capture npm scan outputs in repository root:
+     - `audit-results.json`
+     - `audit-report.txt`
+     - `outdated-report.txt`
+3. **Package artifact locally**
+   - `npm run package-security-evidence`
+   - By default, the script uses `package.json` version when `--version` is not provided
+4. **Troubleshoot failures**
+   - If packaging fails with `Missing required evidence file`, generate or copy the missing file to repository root
+   - If packaging fails with `Invalid JSON`, regenerate the referenced JSON file and validate syntax
+   - If packaging fails with `Invalid SBOM format`, regenerate SBOM and ensure `bomFormat` is `CycloneDX`
+5. **Confirm output structure**
+   - Check that output folder `security-evidence-pack-v{VERSION}` exists
+   - Verify required files:
+     - `release/release-notes.md`
+     - `scans/npm/audit-results.json`
+     - `scans/npm/audit-report.txt`
+     - `scans/npm/outdated-report.txt`
+     - `sbom/sbom.cdx.json`
+
+### 4.4 Monitor Build
 
 After the prepare-release workflow completes:
 
@@ -122,7 +152,7 @@ After the prepare-release workflow completes:
 
 **Evidence:** Link to successful build run: `_______________`
 
-### 4.4 Publish Release
+### 4.5 Publish Release
 
 After all build workflows complete successfully:
 
