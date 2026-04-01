@@ -12,10 +12,20 @@ export const requiredArtifactFiles =
 	{source: 'sbom.cdx.json', destination: 'sbom/sbom.cdx.json'}
 ];
 
+export const requiredAlternativeArtifactFiles =
+[
+	{
+		description: 'Snyk evidence',
+		candidates: [
+			{source: 'snyk-report.json', destination: 'scans/snyk/snyk-report.json'},
+			{source: 'snyk-export-error.txt', destination: 'scans/snyk/snyk-export-error.txt'}
+		]
+	}
+];
+
 export const futureArtifactPaths =
 [
 	'summary/security-summary.html',
-	'scans/snyk/snyk-report.json',
 	'optional/security-summary.pdf',
 	'optional/metadata.json',
 	'optional/checksums.sha256'
@@ -83,10 +93,76 @@ async function validateSbomFile(filePath)
 	}
 }
 
+async function validateSnykReportJson(filePath)
+{
+	await parseRequiredJsonFile(filePath, 'snyk-report.json');
+}
+
 const requiredFileValidators = new Map([
 	['audit-results.json', validateAuditResultsJson],
-	['sbom.cdx.json', validateSbomFile]
+	['sbom.cdx.json', validateSbomFile],
+	['snyk-report.json', validateSnykReportJson]
 ]);
+
+async function tryStat(filePath)
+{
+	try
+	{
+		return await stat(filePath);
+	}
+	catch (e)
+	{
+		return null;
+	}
+}
+
+async function copyArtifactFile(sourcePath, destinationPath, sourceName)
+{
+	await assertRequiredFileExists(sourcePath, sourceName);
+
+	const validator = requiredFileValidators.get(sourceName);
+
+	if (validator)
+	{
+		await validator(sourcePath);
+	}
+
+	await mkdir(path.dirname(destinationPath), {recursive: true});
+	await cp(sourcePath, destinationPath, {force: true});
+}
+
+async function packageAlternativeArtifactFileGroup(workspaceDir, artifactDir, fileGroup, packagedFiles)
+{
+	const availableFiles = [];
+
+	for (const candidate of fileGroup.candidates)
+	{
+		const sourcePath = path.join(workspaceDir, candidate.source);
+		const fileStat = await tryStat(sourcePath);
+
+		if (fileStat?.isFile())
+		{
+			availableFiles.push(candidate);
+		}
+	}
+
+	if (availableFiles.length === 0)
+	{
+		throw new Error(`Missing required ${fileGroup.description} file: expected one of ${fileGroup.candidates.map((candidate) => candidate.source).join(', ')}`);
+	}
+
+	if (availableFiles.length > 1)
+	{
+		throw new Error(`Conflicting ${fileGroup.description} files: expected only one of ${fileGroup.candidates.map((candidate) => candidate.source).join(', ')}`);
+	}
+
+	const selectedFile = availableFiles[0];
+	const sourcePath = path.join(workspaceDir, selectedFile.source);
+	const destinationPath = path.join(artifactDir, selectedFile.destination);
+
+	await copyArtifactFile(sourcePath, destinationPath, selectedFile.source);
+	packagedFiles.push(normalizeRelativePath(selectedFile.destination));
+}
 
 async function resolveVersion(providedVersion, workspaceDir)
 {
@@ -122,18 +198,13 @@ export async function packageSecurityEvidence(options = {})
 		const sourcePath = path.join(workspaceDir, file.source);
 		const destinationPath = path.join(artifactDir, file.destination);
 
-		await assertRequiredFileExists(sourcePath, file.source);
-
-		const validator = requiredFileValidators.get(file.source);
-
-		if (validator)
-		{
-			await validator(sourcePath);
-		}
-		
-		await mkdir(path.dirname(destinationPath), {recursive: true});
-		await cp(sourcePath, destinationPath, {force: true});
+		await copyArtifactFile(sourcePath, destinationPath, file.source);
 		packagedFiles.push(normalizeRelativePath(file.destination));
+	}
+
+	for (const fileGroup of requiredAlternativeArtifactFiles)
+	{
+		await packageAlternativeArtifactFileGroup(workspaceDir, artifactDir, fileGroup, packagedFiles);
 	}
 	
 	return {

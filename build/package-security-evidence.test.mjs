@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+	requiredAlternativeArtifactFiles,
 	futureArtifactPaths,
 	getSecurityEvidenceArtifactName,
 	packageSecurityEvidence
@@ -67,7 +68,14 @@ test('packages the current security evidence files into the expected structure',
 		}),
 		'audit-report.txt': 'audit report\n',
 		'outdated-report.txt': 'outdated report\n',
-		'sbom.cdx.json': createValidSbom()
+		'sbom.cdx.json': createValidSbom(),
+		'snyk-report.json': JSON.stringify({
+			ok: false,
+			vulnerabilities: [
+				{severity: 'high'},
+				{severity: 'medium'}
+			]
+		})
 	});
 	
 	const result = await packageSecurityEvidence({
@@ -86,7 +94,8 @@ test('packages the current security evidence files into the expected structure',
 		'scans/npm/audit-results.json',
 		'scans/npm/audit-report.txt',
 		'scans/npm/outdated-report.txt',
-		'sbom/sbom.cdx.json'
+		'sbom/sbom.cdx.json',
+		'scans/snyk/snyk-report.json'
 	]);
 	assert.deepEqual(result.futureArtifactPaths, futureArtifactPaths);
 	assert.equal(await readFile(releaseNotesPath, 'utf8'), '# Release Notes\n');
@@ -103,7 +112,8 @@ test('uses the workspace package.json version when version option is omitted', a
 		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
 		'audit-report.txt': 'audit report\n',
 		'outdated-report.txt': 'outdated report\n',
-		'sbom.cdx.json': createValidSbom()
+		'sbom.cdx.json': createValidSbom(),
+		'snyk-report.json': JSON.stringify({ok: true, vulnerabilities: []})
 	});
 
 	const result = await packageSecurityEvidence({
@@ -121,7 +131,8 @@ test('fails when a required evidence file is missing', async (t) =>
 		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
 		'audit-report.txt': 'audit report\n',
 		'outdated-report.txt': 'outdated report\n',
-		'sbom.cdx.json': createValidSbom()
+		'sbom.cdx.json': createValidSbom(),
+		'snyk-report.json': JSON.stringify({ok: true, vulnerabilities: []})
 	});
 	
 	await assert.rejects(() => packageSecurityEvidence({
@@ -138,7 +149,8 @@ test('fails when sbom.cdx.json is missing', async (t) =>
 		'release-notes.md': '# Release Notes\n',
 		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
 		'audit-report.txt': 'audit report\n',
-		'outdated-report.txt': 'outdated report\n'
+		'outdated-report.txt': 'outdated report\n',
+		'snyk-report.json': JSON.stringify({ok: true, vulnerabilities: []})
 	});
 
 	await assert.rejects(() => packageSecurityEvidence({
@@ -156,7 +168,8 @@ test('fails when audit-results.json is not valid JSON', async (t) =>
 		'audit-results.json': '{invalid json',
 		'audit-report.txt': 'audit report\n',
 		'outdated-report.txt': 'outdated report\n',
-		'sbom.cdx.json': createValidSbom()
+		'sbom.cdx.json': createValidSbom(),
+		'snyk-report.json': JSON.stringify({ok: true, vulnerabilities: []})
 	});
 	
 	await assert.rejects(() => packageSecurityEvidence({
@@ -174,7 +187,8 @@ test('fails when sbom.cdx.json is not valid JSON', async (t) =>
 		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
 		'audit-report.txt': 'audit report\n',
 		'outdated-report.txt': 'outdated report\n',
-		'sbom.cdx.json': '{invalid json'
+		'sbom.cdx.json': '{invalid json',
+		'snyk-report.json': JSON.stringify({ok: true, vulnerabilities: []})
 	});
 
 	await assert.rejects(() => packageSecurityEvidence({
@@ -192,6 +206,7 @@ test('fails when sbom.cdx.json is not a CycloneDX SBOM', async (t) =>
 		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
 		'audit-report.txt': 'audit report\n',
 		'outdated-report.txt': 'outdated report\n',
+		'snyk-report.json': JSON.stringify({ok: true, vulnerabilities: []}),
 		'sbom.cdx.json': JSON.stringify({
 			bomFormat: 'SPDX',
 			specVersion: '2.3'
@@ -203,4 +218,89 @@ test('fails when sbom.cdx.json is not a CycloneDX SBOM', async (t) =>
 		workspaceDir,
 		outputDir
 	}), /Invalid SBOM format in required evidence file: sbom\.cdx\.json/);
+});
+
+test('packages Snyk export diagnostics when the report is unavailable', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom(),
+		'snyk-export-error.txt': 'Snyk export failed\n'
+	});
+
+	const result = await packageSecurityEvidence({
+		version: '1.2.3',
+		workspaceDir,
+		outputDir
+	});
+
+	assert.deepEqual(result.packagedFiles, [
+		'release/release-notes.md',
+		'scans/npm/audit-results.json',
+		'scans/npm/audit-report.txt',
+		'scans/npm/outdated-report.txt',
+		'sbom/sbom.cdx.json',
+		'scans/snyk/snyk-export-error.txt'
+	]);
+});
+
+test('fails when no Snyk evidence file is available', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom()
+	});
+
+	await assert.rejects(() => packageSecurityEvidence({
+		version: '1.2.3',
+		workspaceDir,
+		outputDir
+	}), new RegExp(`Missing required ${requiredAlternativeArtifactFiles[0].description} file: expected one of snyk-report\\.json, snyk-export-error\\.txt`));
+});
+
+test('fails when snyk-report.json is not valid JSON', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom(),
+		'snyk-report.json': '{invalid json'
+	});
+
+	await assert.rejects(() => packageSecurityEvidence({
+		version: '1.2.3',
+		workspaceDir,
+		outputDir
+	}), /Invalid JSON in required evidence file: snyk-report\.json/);
+});
+
+test('fails when both Snyk report and export error files are present', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, {
+		'release-notes.md': '# Release Notes\n',
+		'audit-results.json': JSON.stringify({metadata: {vulnerabilities: {critical: 0, high: 0}}}),
+		'audit-report.txt': 'audit report\n',
+		'outdated-report.txt': 'outdated report\n',
+		'sbom.cdx.json': createValidSbom(),
+		'snyk-report.json': JSON.stringify({ok: false, vulnerabilities: []}),
+		'snyk-export-error.txt': 'Snyk export failed\n'
+	});
+
+	await assert.rejects(() => packageSecurityEvidence({
+		version: '1.2.3',
+		workspaceDir,
+		outputDir
+	}), /Conflicting Snyk evidence files: expected only one of snyk-report\.json, snyk-export-error\.txt/);
 });
