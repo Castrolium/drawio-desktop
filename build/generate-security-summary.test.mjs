@@ -51,6 +51,15 @@ test('generates a ready summary when audit and Snyk gates pass', async (t) =>
 	assert.equal(result.outputPath, summaryPath);
 	assert.match(html, /Security Summary/);
 	assert.match(html, /status-ready/);
+	assert.match(html, /Ready for release review/);
+	assert.match(html, /Reviewer Next Step/);
+	assert.match(html, /Version Under Review/);
+	assert.match(html, /Checks Executed/);
+	assert.match(html, /Relevant Findings/);
+	assert.match(html, /Evidence Inventory/);
+	assert.match(html, /Used for review/);
+	assert.match(html, /Confirms the release scope and human-readable change context/);
+	assert.match(html, /Provides the machine-readable vulnerability counts used for the release gate/);
 	assert.match(html, /Release 1\.2\.3/);
 	assert.match(html, /Prepare Release/);
 	assert.match(html, /21489875201/);
@@ -77,6 +86,8 @@ test('generates a blocked summary when only Snyk export diagnostics are availabl
 	const html = await readFile(path.join(workspaceDir, securitySummaryRelativePath), 'utf8');
 
 	assert.equal(result.status, 'blocked');
+	assert.match(html, /Release blocked/);
+	assert.match(html, /Fix the Snyk export failure, regenerate the evidence pack, and re-run the release validation/);
 	assert.match(html, /export-failed/);
 	assert.match(html, /\.\.\/scans\/snyk\/snyk-export-error\.txt/);
 	assert.match(html, /Missing token/);
@@ -96,6 +107,8 @@ test('generates a blocked summary when npm audit reports critical or high findin
 	const html = await readFile(path.join(workspaceDir, securitySummaryRelativePath), 'utf8');
 
 	assert.equal(result.status, 'blocked');
+	assert.match(html, /Release blocked/);
+	assert.match(html, /Resolve the npm audit gate: 1 critical and 2 high findings are currently blocking the release/);
 	assert.match(html, /1 critical and 2 high vulnerabilities/);
 });
 
@@ -117,6 +130,8 @@ test('generates a review-required summary when Snyk findings are present', async
 
 	assert.equal(result.status, 'review-required');
 	assert.match(html, /status-review-required/);
+	assert.match(html, /Reviewer decision needed/);
+	assert.match(html, /Review 2 Snyk findings in the linked report before approving the release/);
 	assert.match(html, /findings-detected/);
 	assert.match(html, /2 findings/);
 });
@@ -172,6 +187,7 @@ test('writes artifact-relative links from the summary folder to packaged evidenc
 
 	const html = await readFile(path.join(workspaceDir, securitySummaryRelativePath), 'utf8');
 
+	assert.match(html, /Dependency freshness/);
 	assert.match(html, /href="\.\.\/release\/release-notes\.md"/);
 	assert.match(html, /href="\.\.\/scans\/npm\/audit-results\.json"/);
 	assert.match(html, /href="\.\.\/scans\/npm\/audit-report\.txt"/);
@@ -198,6 +214,8 @@ test('renders a fallback summary with staged evidence links', async () =>
 
 	assert.match(html, /Fallback Security Summary/);
 	assert.match(html, /data-security-evidence-summary="fallback"/);
+	assert.match(html, /Fallback troubleshooting view/);
+	assert.match(html, /Immediate Action/);
 	assert.match(html, /\.\.\/release\/release-notes\.md/);
 	assert.match(html, /Generated summary was not available/);
 });
