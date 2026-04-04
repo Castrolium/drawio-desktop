@@ -23,7 +23,7 @@ function assertNpmExecPath()
 {
 	if (!npmCliPath)
 	{
-		throw new Error('Missing npm context for SBOM generation. Run this script through npm.');
+		throw new Error('Missing npm context for SBOM generation. Install Node.js with npm and run "npm run generate-sbom".');
 	}
 }
 

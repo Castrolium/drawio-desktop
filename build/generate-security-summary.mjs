@@ -5,11 +5,14 @@ import {parseArgs} from 'node:util';
 import {fileURLToPath} from 'node:url';
 
 import {
+	normalizeRelativePath,
 	requiredAlternativeArtifactFiles,
-	requiredArtifactFiles
-} from './package-security-evidence.mjs';
-
-export const securitySummaryRelativePath = 'summary/security-summary.html';
+	requiredArtifactFiles,
+	securitySummaryFallbackMarker,
+	securitySummaryRelativePath,
+	securitySummaryStatuses,
+	snykReportStatuses
+} from './security-evidence-contract.mjs';
 
 const summaryDirectory = path.posix.dirname(securitySummaryRelativePath);
 const snykEvidenceGroup = requiredAlternativeArtifactFiles[0];
@@ -23,11 +26,6 @@ const evidenceLabels = new Map([
 	['snyk-report.json', 'Snyk report (JSON)'],
 	['snyk-export-error.txt', 'Snyk export diagnostics']
 ]);
-
-function normalizeRelativePath(filePath)
-{
-	return filePath.split(path.sep).join('/');
-}
 
 function ensureNumber(value)
 {
@@ -149,8 +147,7 @@ async function parseRequiredJsonFile(filePath, sourceName)
 
 	try
 	{
-		const fileContents = await readFile(filePath, 'utf8');
-		return JSON.parse(fileContents);
+		return JSON.parse(await readFile(filePath, 'utf8'));
 	}
 	catch (e)
 	{
@@ -282,7 +279,7 @@ async function readSnykSummary(workspaceDir, selectedCandidate)
 		return {
 			fileLabel: evidenceLabels.get(selectedCandidate.source),
 			filePath: selectedCandidate.destination,
-			reportStatus: findingsTotal > 0 ? 'findings-detected' : 'no-findings',
+			reportStatus: findingsTotal > 0 ? snykReportStatuses.findingsDetected : snykReportStatuses.noFindings,
 			findingsTotal,
 			counts,
 			errorDetails: null
@@ -294,7 +291,7 @@ async function readSnykSummary(workspaceDir, selectedCandidate)
 	return {
 		fileLabel: evidenceLabels.get(selectedCandidate.source),
 		filePath: selectedCandidate.destination,
-		reportStatus: 'export-failed',
+		reportStatus: snykReportStatuses.exportFailed,
 		findingsTotal: 0,
 		counts: {
 			critical: 0,
@@ -308,17 +305,17 @@ async function readSnykSummary(workspaceDir, selectedCandidate)
 
 export function determineSecuritySummaryStatus(auditCounts, snykSummary)
 {
-	if (auditCounts.critical > 0 || auditCounts.high > 0 || snykSummary.reportStatus === 'export-failed')
+	if (auditCounts.critical > 0 || auditCounts.high > 0 || snykSummary.reportStatus === snykReportStatuses.exportFailed)
 	{
-		return 'blocked';
+		return securitySummaryStatuses.blocked;
 	}
 
 	if (snykSummary.findingsTotal > 0)
 	{
-		return 'review-required';
+		return securitySummaryStatuses.reviewRequired;
 	}
 
-	return 'ready';
+	return securitySummaryStatuses.ready;
 }
 
 function buildGateReasons(status, auditCounts, snykSummary)
@@ -330,7 +327,7 @@ function buildGateReasons(status, auditCounts, snykSummary)
 		reasons.push(`npm audit reported ${auditCounts.critical} critical and ${auditCounts.high} high vulnerabilities. Critical or high npm findings block the release.`);
 	}
 
-	if (snykSummary.reportStatus === 'export-failed')
+	if (snykSummary.reportStatus === snykReportStatuses.exportFailed)
 	{
 		reasons.push('The Snyk export failed before a usable report could be produced. Review the diagnostics file before releasing.');
 	}
@@ -344,7 +341,7 @@ function buildGateReasons(status, auditCounts, snykSummary)
 		reasons.push(`npm audit also recorded ${auditCounts.moderate} moderate and ${auditCounts.low} low findings for follow-up.`);
 	}
 
-	if (status === 'ready')
+	if (status === securitySummaryStatuses.ready)
 	{
 		reasons.push('No blocking security gate conditions were detected from npm audit or the Snyk export.');
 	}
@@ -416,27 +413,9 @@ function renderSeverityRows(rows)
 	return rows.map((row) => `<tr><th scope="row">${escapeHtml(row.label)}</th><td>${escapeHtml(String(row.value))}</td></tr>`).join('');
 }
 
-export function renderSecuritySummaryHtml(model)
+function renderPageStyles()
 {
-	const statusLead = {
-		ready: 'The release evidence passed the current automated gate checks.',
-		'review-required': 'The release evidence is available, but a reviewer must assess the reported Snyk findings.',
-		blocked: 'The release evidence indicates a blocking issue that must be resolved before releasing.'
-	}[model.status];
-
-	const releaseLabel = model.metadata.version ? `Release ${model.metadata.version}` : 'Unversioned release';
-	const releaseNotesHeading = model.releaseNotesHeading || 'No heading detected in release-notes.md';
-	const reviewNoteItems = model.gateReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('');
-	const snykDetails = model.snyk.errorDetails ? `<pre>${escapeHtml(model.snyk.errorDetails)}</pre>` : '';
-	const primaryComponent = [model.sbom.primaryComponentName, model.sbom.primaryComponentVersion].filter(Boolean).join(' ');
-
-	return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Security Summary - ${escapeHtml(releaseLabel)}</title>
-    <style>
+	return `
       :root {
         color-scheme: light;
         --bg: #f4f7fb;
@@ -621,7 +600,29 @@ export function renderSecuritySummaryHtml(model)
         th {
           width: 42%;
         }
-      }
+      }`;
+}
+
+export function renderSecuritySummaryHtml(model)
+{
+	const statusLead = {
+		[securitySummaryStatuses.ready]: 'The release evidence passed the current automated gate checks.',
+		[securitySummaryStatuses.reviewRequired]: 'The release evidence is available, but a reviewer must assess the reported Snyk findings.',
+		[securitySummaryStatuses.blocked]: 'The release evidence indicates a blocking issue that must be resolved before releasing.'
+	}[model.status];
+	const releaseLabel = model.metadata.version ? `Release ${model.metadata.version}` : 'Unversioned release';
+	const releaseNotesHeading = model.releaseNotesHeading || 'No heading detected in release-notes.md';
+	const reviewNoteItems = model.gateReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('');
+	const snykDetails = model.snyk.errorDetails ? `<pre>${escapeHtml(model.snyk.errorDetails)}</pre>` : '';
+	const primaryComponent = [model.sbom.primaryComponentName, model.sbom.primaryComponentVersion].filter(Boolean).join(' ');
+
+	return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security Summary - ${escapeHtml(releaseLabel)}</title>
+    <style>${renderPageStyles()}
     </style>
   </head>
   <body>
@@ -735,6 +736,82 @@ export function renderSecuritySummaryHtml(model)
             ${renderContextRow('Components', model.sbom.componentCount)}
             ${renderContextRow('Primary component', primaryComponent || null)}
             ${renderContextRow('Artifact path', 'sbom/sbom.cdx.json')}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>
+`;
+}
+
+export function renderFallbackSecuritySummaryHtml(model)
+{
+	const releaseLabel = model.version ? `Release ${model.version}` : 'Unversioned release';
+	const reviewNotes = (model.reasons?.length ? model.reasons : [
+		'The generated security summary was unavailable during packaging.',
+		'Review the packaged raw evidence and workflow logs before retrying the release.'
+	]).map((reason) => `<li>${escapeHtml(reason)}</li>`).join('');
+
+	return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security Summary - Fallback for ${escapeHtml(releaseLabel)}</title>
+    <style>${renderPageStyles()}
+    </style>
+  </head>
+  <body ${securitySummaryFallbackMarker}>
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Security Evidence Pack</p>
+        <h1>Fallback Security Summary</h1>
+        <div class="status-line">
+          <span class="status-pill status-${securitySummaryStatuses.blocked}">${securitySummaryStatuses.blocked}</span>
+          <span>${escapeHtml(releaseLabel)}</span>
+        </div>
+        <p>This troubleshooting view was staged so the packaged evidence remains available even though the validated HTML summary was unavailable or incomplete.</p>
+        <p class="muted">Artifact: ${escapeHtml(model.artifactName || 'security-evidence-pack')}</p>
+      </header>
+
+      <section>
+        <h2>What Needs Attention</h2>
+        <ul>
+          ${reviewNotes}
+        </ul>
+      </section>
+
+      <section class="grid">
+        <div>
+          <h2>Packaging Context</h2>
+          <table>
+            <tbody>
+              ${renderContextRow('Version', model.version || null)}
+              ${renderContextRow('Artifact name', model.artifactName || null)}
+              ${renderContextRow('Generated at', model.generatedAt || null)}
+              ${renderContextRow('Summary mode', 'fallback')}
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <h2>Next Step</h2>
+          <p class="muted">Inspect the staged files below, then review the workflow logs to fix the missing or invalid evidence before re-running the release preparation.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Staged Evidence</h2>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Evidence</th>
+              <th scope="col">Artifact path</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${renderInventoryRows(model.evidenceInventory || [])}
           </tbody>
         </table>
       </section>

@@ -1,15 +1,23 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
-	requiredAlternativeArtifactFiles,
+	assembleSecurityEvidence,
 	futureArtifactPaths,
 	getSecurityEvidenceArtifactName,
-	packageSecurityEvidence
+	packageSecurityEvidence,
+	validatePackagedSecurityEvidence
 } from './package-security-evidence.mjs';
+import {
+	createAuditResults,
+	createSecurityEvidenceFixtureFiles,
+	createSnykReport,
+	createValidSummaryHtml,
+	writeWorkspaceFiles
+} from './security-evidence-fixture.mjs';
 
 async function createTempDirs(t)
 {
@@ -24,81 +32,12 @@ async function createTempDirs(t)
 	return {workspaceDir, outputDir};
 }
 
-async function writeWorkspaceFiles(workspaceDir, files)
-{
-	for (const [relativePath, contents] of Object.entries(files))
-	{
-		const fullPath = path.join(workspaceDir, relativePath);
-		await mkdir(path.dirname(fullPath), {recursive: true});
-		await writeFile(fullPath, contents, 'utf8');
-	}
-}
-
-function createAuditResults(overrides = {})
-{
-	return JSON.stringify({
-		metadata: {
-			vulnerabilities: {
-				critical: 0,
-				high: 0,
-				moderate: 1,
-				low: 2,
-				...overrides
-			}
-		}
-	});
-}
-
-function createSnykReport(vulnerabilities = [])
-{
-	return JSON.stringify({
-		ok: vulnerabilities.length === 0,
-		vulnerabilities
-	});
-}
-
-function createValidSbom()
-{
-	return JSON.stringify({
-		bomFormat: 'CycloneDX',
-		specVersion: '1.6',
-		version: 1,
-		metadata: {
-			component: {
-				type: 'application',
-				name: 'draw.io',
-				version: '1.2.3'
-			}
-		},
-		components: []
-	});
-}
-
-function createValidSummaryHtml()
-{
-	return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <title>Security Summary</title>
-  </head>
-  <body>
-    <h1>Security Summary</h1>
-  </body>
-</html>
-`;
-}
-
 function createRequiredEvidenceFiles(overrides = {})
 {
 	return {
-		'summary/security-summary.html': createValidSummaryHtml(),
-		'release-notes.md': '# Release Notes\n',
-		'audit-results.json': createAuditResults(),
-		'audit-report.txt': 'audit report\n',
-		'outdated-report.txt': 'outdated report\n',
-		'sbom.cdx.json': createValidSbom(),
-		'snyk-report.json': createSnykReport(),
+		...createSecurityEvidenceFixtureFiles({
+			'summary/security-summary.html': createValidSummaryHtml()
+		}),
 		...overrides
 	};
 }
@@ -125,6 +64,7 @@ test('packages the current security evidence files into the expected structure',
 	const sbomPath = path.join(artifactDir, 'sbom', 'sbom.cdx.json');
 
 	assert.equal(result.artifactName, 'security-evidence-pack-v1.2.3');
+	assert.equal(result.validationPassed, true);
 	assert.deepEqual(result.packagedFiles, [
 		'summary/security-summary.html',
 		'release/release-notes.md',
@@ -136,7 +76,7 @@ test('packages the current security evidence files into the expected structure',
 	]);
 	assert.deepEqual(result.futureArtifactPaths, futureArtifactPaths);
 	assert.equal(await readFile(summaryPath, 'utf8'), createValidSummaryHtml());
-	assert.equal(await readFile(releaseNotesPath, 'utf8'), '# Release Notes\n');
+	assert.equal(await readFile(releaseNotesPath, 'utf8'), '# Release Notes for 1.2.3\n\nSecurity fixes.\n');
 	assert.equal(await readFile(auditJsonPath, 'utf8'), await readFile(path.join(workspaceDir, 'audit-results.json'), 'utf8'));
 	assert.equal(await readFile(sbomPath, 'utf8'), await readFile(path.join(workspaceDir, 'sbom.cdx.json'), 'utf8'));
 });
@@ -156,91 +96,83 @@ test('uses the workspace package.json version when version option is omitted', a
 	assert.equal(result.artifactName, 'security-evidence-pack-v4.5.6');
 });
 
-test('fails when a required evidence file is missing', async (t) =>
-{
-	const {workspaceDir, outputDir} = await createTempDirs(t);
-	const files = createRequiredEvidenceFiles();
-	delete files['release-notes.md'];
-	await writeWorkspaceFiles(workspaceDir, files);
-
-	await assert.rejects(() => packageSecurityEvidence({
-		version: '1.2.3',
-		workspaceDir,
-		outputDir
-	}), /Missing required evidence file: release-notes\.md/);
-});
-
-test('fails when security-summary.html is missing', async (t) =>
+test('stages a fallback summary when the generated summary is unavailable', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	const files = createRequiredEvidenceFiles();
 	delete files['summary/security-summary.html'];
 	await writeWorkspaceFiles(workspaceDir, files);
 
+	const assembledResult = await assembleSecurityEvidence({
+		version: '1.2.3',
+		workspaceDir,
+		outputDir,
+		generatedAt: '2026-04-01T10:00:00Z'
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+	const fallbackSummary = await readFile(path.join(assembledResult.artifactDir, 'summary', 'security-summary.html'), 'utf8');
+
+	assert.match(fallbackSummary, /Fallback Security Summary/);
+	assert.match(fallbackSummary, /data-security-evidence-summary="fallback"/);
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Fallback security summary cannot satisfy release validation: summary/security-summary.html'
+	]);
+
 	await assert.rejects(() => packageSecurityEvidence({
 		version: '1.2.3',
 		workspaceDir,
 		outputDir
-	}), /Missing required evidence file: summary\/security-summary\.html/);
+	}), /Fallback security summary cannot satisfy release validation: summary\/security-summary\.html/);
 });
 
-test('fails when security-summary.html is not valid HTML', async (t) =>
-{
-	const {workspaceDir, outputDir} = await createTempDirs(t);
-	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({
-		'summary/security-summary.html': 'not html'
-	}));
-
-	await assert.rejects(() => packageSecurityEvidence({
-		version: '1.2.3',
-		workspaceDir,
-		outputDir
-	}), /Invalid HTML in required evidence file: summary\/security-summary\.html/);
-});
-
-test('fails when sbom.cdx.json is missing', async (t) =>
+test('reports missing required evidence after staging the artifact', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	const files = createRequiredEvidenceFiles();
-	delete files['sbom.cdx.json'];
+	delete files['release-notes.md'];
 	await writeWorkspaceFiles(workspaceDir, files);
 
-	await assert.rejects(() => packageSecurityEvidence({
+	const assembledResult = await assembleSecurityEvidence({
 		version: '1.2.3',
 		workspaceDir,
 		outputDir
-	}), /Missing required evidence file: sbom\.cdx\.json/);
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Missing required evidence file: release/release-notes.md'
+	]);
 });
 
-test('fails when audit-results.json is not valid JSON', async (t) =>
+test('reports invalid JSON after staging the artifact', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({
 		'audit-results.json': '{invalid json'
 	}));
 
-	await assert.rejects(() => packageSecurityEvidence({
+	const assembledResult = await assembleSecurityEvidence({
 		version: '1.2.3',
 		workspaceDir,
 		outputDir
-	}), /Invalid JSON in required evidence file: audit-results\.json/);
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Invalid JSON in required evidence file: scans/npm/audit-results.json'
+	]);
 });
 
-test('fails when sbom.cdx.json is not valid JSON', async (t) =>
-{
-	const {workspaceDir, outputDir} = await createTempDirs(t);
-	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({
-		'sbom.cdx.json': '{invalid json'
-	}));
-
-	await assert.rejects(() => packageSecurityEvidence({
-		version: '1.2.3',
-		workspaceDir,
-		outputDir
-	}), /Invalid JSON in required evidence file: sbom\.cdx\.json/);
-});
-
-test('fails when sbom.cdx.json is not a CycloneDX SBOM', async (t) =>
+test('reports invalid SBOM content after staging the artifact', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({
@@ -250,11 +182,19 @@ test('fails when sbom.cdx.json is not a CycloneDX SBOM', async (t) =>
 		})
 	}));
 
-	await assert.rejects(() => packageSecurityEvidence({
+	const assembledResult = await assembleSecurityEvidence({
 		version: '1.2.3',
 		workspaceDir,
 		outputDir
-	}), /Invalid SBOM format in required evidence file: sbom\.cdx\.json/);
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Invalid SBOM format in required evidence file: sbom/sbom.cdx.json'
+	]);
 });
 
 test('packages Snyk export diagnostics when the report is unavailable', async (t) =>
@@ -282,35 +222,51 @@ test('packages Snyk export diagnostics when the report is unavailable', async (t
 	]);
 });
 
-test('fails when no Snyk evidence file is available', async (t) =>
+test('reports missing Snyk evidence after staging the artifact', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	const files = createRequiredEvidenceFiles();
 	delete files['snyk-report.json'];
 	await writeWorkspaceFiles(workspaceDir, files);
 
-	await assert.rejects(() => packageSecurityEvidence({
+	const assembledResult = await assembleSecurityEvidence({
 		version: '1.2.3',
 		workspaceDir,
 		outputDir
-	}), new RegExp(`Missing required ${requiredAlternativeArtifactFiles[0].description} file: expected one of snyk-report\\.json, snyk-export-error\\.txt`));
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Missing required Snyk evidence file: expected one of scans/snyk/snyk-report.json, scans/snyk/snyk-export-error.txt'
+	]);
 });
 
-test('fails when snyk-report.json is not valid JSON', async (t) =>
+test('reports invalid Snyk JSON after staging the artifact', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({
 		'snyk-report.json': '{invalid json'
 	}));
 
-	await assert.rejects(() => packageSecurityEvidence({
+	const assembledResult = await assembleSecurityEvidence({
 		version: '1.2.3',
 		workspaceDir,
 		outputDir
-	}), /Invalid JSON in required evidence file: snyk-report\.json/);
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Invalid JSON in required evidence file: scans/snyk/snyk-report.json'
+	]);
 });
 
-test('fails when both Snyk report and export error files are present', async (t) =>
+test('reports conflicting Snyk evidence files after staging the artifact', async (t) =>
 {
 	const {workspaceDir, outputDir} = await createTempDirs(t);
 	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({
@@ -318,9 +274,39 @@ test('fails when both Snyk report and export error files are present', async (t)
 		'snyk-export-error.txt': 'Snyk export failed\n'
 	}));
 
-	await assert.rejects(() => packageSecurityEvidence({
+	const assembledResult = await assembleSecurityEvidence({
 		version: '1.2.3',
 		workspaceDir,
 		outputDir
-	}), /Conflicting Snyk evidence files: expected only one of snyk-report\.json, snyk-export-error\.txt/);
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Conflicting Snyk evidence files: expected only one of scans/snyk/snyk-report.json, scans/snyk/snyk-export-error.txt'
+	]);
+});
+
+test('reports invalid generated summary HTML after staging the artifact', async (t) =>
+{
+	const {workspaceDir, outputDir} = await createTempDirs(t);
+	await writeWorkspaceFiles(workspaceDir, createRequiredEvidenceFiles({
+		'summary/security-summary.html': 'not html'
+	}));
+
+	const assembledResult = await assembleSecurityEvidence({
+		version: '1.2.3',
+		workspaceDir,
+		outputDir
+	});
+	const validationResult = await validatePackagedSecurityEvidence({
+		artifactDir: assembledResult.artifactDir
+	});
+
+	assert.equal(validationResult.isValid, false);
+	assert.deepEqual(validationResult.validationErrors, [
+		'Invalid HTML in required evidence file: summary/security-summary.html'
+	]);
 });

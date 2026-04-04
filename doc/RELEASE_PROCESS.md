@@ -62,6 +62,7 @@ The `prepare-release` workflow automates:
 - Committing changes and creating version tag
 - Packaging security evidence into a structured artifact
 - Uploading the security evidence artifact
+- Uploading staged evidence before post-upload security enforcement so troubleshooting data remains available on failure
 
 **To trigger:**
 
@@ -94,11 +95,12 @@ The `prepare-release` workflow automates:
 | 11. npm audit -> FAIL if critical/high vulns                    |
 | 12. npm outdated -> report only                                 |
 | 13. Generate HTML summary (`summary/security-summary.html`)     |
-| 14. Package + upload security evidence artifact                 |
-| 15. Enforce post-upload security gates                          |
-| 16. Commit + push                                               |
-| 17. Create release PR                                           |
-| 18. Build workflows trigger after merge + tag                   |
+| 14. Stage + validate the security evidence artifact             |
+| 15. Upload security evidence artifact (always)                  |
+| 16. Enforce post-upload security gates                          |
+| 17. Commit + push                                               |
+| 18. Create release PR                                           |
+| 19. Build workflows trigger after merge + tag                   |
 +-----------------------------------------------------------------+
 ```
 
@@ -135,8 +137,10 @@ Before triggering the workflow:
 Run this local sequence before triggering the release workflow to catch setup and artifact issues early.
 
 1. **Validate dependencies and scripts**
+   - Use Node.js `24.x` locally to match the controlled workflow environment
    - `npm install`
    - `npm run test:security-evidence`
+   - `npm run test:security-evidence:smoke`
 2. **Generate required inputs**
    - Export `SNYK_TOKEN` in your shell before running Snyk locally
    - Run `snyk test --json-file-output=snyk-report.json`
@@ -154,9 +158,11 @@ Run this local sequence before triggering the release workflow to catch setup an
    - `npm run package-security-evidence`
    - By default, the script uses `package.json` version when `--version` is not provided
 5. **Troubleshoot failures**
+   - If the smoke run fails with a preflight error, install Node.js with npm and re-run it via `npm run test:security-evidence:smoke`
    - If packaging fails with `Missing required evidence file`, generate or copy the missing file to repository root
    - If packaging fails with `Invalid JSON`, regenerate the referenced JSON file and validate syntax
    - If packaging fails with `Invalid SBOM format`, regenerate SBOM and ensure `bomFormat` is `CycloneDX`
+   - If packaging fails with `Fallback security summary cannot satisfy release validation`, review the uploaded fallback summary and fix the HTML summary generation step before re-running
    - If summary generation fails, inspect the referenced evidence input and regenerate the missing or invalid file
    - If Snyk export fails technically, create or inspect `snyk-export-error.txt` and re-run after fixing the export issue
 6. **Confirm output structure**

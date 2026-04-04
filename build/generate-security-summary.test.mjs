@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
 	generateSecuritySummary,
-	securitySummaryRelativePath
+	renderFallbackSecuritySummaryHtml
 } from './generate-security-summary.mjs';
+import {
+	createAuditResults,
+	createSecurityEvidenceFixtureFiles,
+	createSnykReport,
+	getDefaultSecurityEvidenceMetadata,
+	writeWorkspaceFiles
+} from './security-evidence-fixture.mjs';
+import {securitySummaryRelativePath} from './security-evidence-contract.mjs';
 
 async function createTempWorkspace(t)
 {
@@ -16,102 +24,11 @@ async function createTempWorkspace(t)
 	return workspaceDir;
 }
 
-async function writeWorkspaceFiles(workspaceDir, files)
-{
-	for (const [relativePath, contents] of Object.entries(files))
-	{
-		const fullPath = path.join(workspaceDir, relativePath);
-		await mkdir(path.dirname(fullPath), {recursive: true});
-		await writeFile(fullPath, contents, 'utf8');
-	}
-}
-
-function createAuditResults(overrides = {})
-{
-	return JSON.stringify({
-		metadata: {
-			vulnerabilities: {
-				critical: 0,
-				high: 0,
-				moderate: 0,
-				low: 0,
-				...overrides
-			}
-		}
-	});
-}
-
-function createSnykReport(vulnerabilities = [])
-{
-	return JSON.stringify({
-		ok: vulnerabilities.length === 0,
-		vulnerabilities
-	});
-}
-
-function createValidSbom()
-{
-	return JSON.stringify({
-		bomFormat: 'CycloneDX',
-		specVersion: '1.6',
-		version: 1,
-		metadata: {
-			component: {
-				type: 'application',
-				name: 'draw.io',
-				version: '1.2.3'
-			}
-		},
-		components: [
-			{name: 'electron', version: '39.6.1'},
-			{name: 'buffer', version: '6.0.3'}
-		]
-	});
-}
-
 function createBaseEvidenceFiles(overrides = {})
 {
 	return {
-		'release-notes.md': '# Release Notes for 1.2.3\n\nSecurity fixes.\n',
-		'audit-results.json': createAuditResults(),
-		'audit-report.txt': 'found 0 vulnerabilities\n',
-		'outdated-report.txt': 'Package Current Wanted Latest\n',
-		'sbom.cdx.json': createValidSbom(),
-		'snyk-report.json': createSnykReport(),
-		'package.json': JSON.stringify({
-			version: '1.2.3',
-			repository: {
-				type: 'git',
-				url: 'git@github.com:jgraph/drawio-desktop.git'
-			}
-		}),
-		'package-lock.json': JSON.stringify({
-			packages: {
-				'node_modules/electron': {
-					version: '39.6.1'
-				}
-			}
-		}),
+		...createSecurityEvidenceFixtureFiles(),
 		...overrides
-	};
-}
-
-function getDefaultMetadata()
-{
-	return {
-		version: '1.2.3',
-		repository: 'https://github.com/jgraph/drawio-desktop',
-		workflowName: 'Prepare Release',
-		runId: '21489875201',
-		runUrl: 'https://github.com/jgraph/drawio-desktop/actions/runs/21489875201',
-		gitRef: 'refs/heads/dev',
-		gitCommit: 'abc123def456',
-		drawioRef: 'v1.2.3',
-		drawioCommit: 'drawio987654',
-		nodeVersion: 'v24.0.0',
-		npmVersion: '11.0.0',
-		electronVersion: '39.6.1',
-		generatedAt: '2026-04-01T10:00:00Z'
 	};
 }
 
@@ -125,7 +42,7 @@ test('generates a ready summary when audit and Snyk gates pass', async (t) =>
 
 	const result = await generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	});
 	const summaryPath = path.join(workspaceDir, securitySummaryRelativePath);
 	const html = await readFile(summaryPath, 'utf8');
@@ -142,6 +59,7 @@ test('generates a ready summary when audit and Snyk gates pass', async (t) =>
 	assert.match(html, /\.\.\/scans\/npm\/audit-results\.json/);
 	assert.match(html, /\.\.\/scans\/snyk\/snyk-report\.json/);
 	assert.match(html, /\.\.\/sbom\/sbom\.cdx\.json/);
+	assert.doesNotMatch(html, /data-security-evidence-summary="fallback"/);
 });
 
 test('generates a blocked summary when only Snyk export diagnostics are available', async (t) =>
@@ -154,7 +72,7 @@ test('generates a blocked summary when only Snyk export diagnostics are availabl
 
 	const result = await generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	});
 	const html = await readFile(path.join(workspaceDir, securitySummaryRelativePath), 'utf8');
 
@@ -173,7 +91,7 @@ test('generates a blocked summary when npm audit reports critical or high findin
 
 	const result = await generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	});
 	const html = await readFile(path.join(workspaceDir, securitySummaryRelativePath), 'utf8');
 
@@ -193,7 +111,7 @@ test('generates a review-required summary when Snyk findings are present', async
 
 	const result = await generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	});
 	const html = await readFile(path.join(workspaceDir, securitySummaryRelativePath), 'utf8');
 
@@ -212,7 +130,7 @@ test('fails when a required evidence input is missing', async (t) =>
 
 	await assert.rejects(() => generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	}), /Missing required evidence file: audit-results\.json/);
 });
 
@@ -225,7 +143,7 @@ test('fails when a required JSON evidence file is invalid', async (t) =>
 
 	await assert.rejects(() => generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	}), /Invalid JSON in required evidence file: audit-results\.json/);
 });
 
@@ -238,7 +156,7 @@ test('fails when both Snyk evidence files are present', async (t) =>
 
 	await assert.rejects(() => generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	}), /Conflicting Snyk evidence files: expected only one of snyk-report\.json, snyk-export-error\.txt/);
 });
 
@@ -249,7 +167,7 @@ test('writes artifact-relative links from the summary folder to packaged evidenc
 
 	await generateSecuritySummary({
 		workspaceDir,
-		...getDefaultMetadata()
+		...getDefaultSecurityEvidenceMetadata()
 	});
 
 	const html = await readFile(path.join(workspaceDir, securitySummaryRelativePath), 'utf8');
@@ -260,4 +178,26 @@ test('writes artifact-relative links from the summary folder to packaged evidenc
 	assert.match(html, /href="\.\.\/scans\/npm\/outdated-report\.txt"/);
 	assert.match(html, /href="\.\.\/scans\/snyk\/snyk-report\.json"/);
 	assert.match(html, /href="\.\.\/sbom\/sbom\.cdx\.json"/);
+});
+
+test('renders a fallback summary with staged evidence links', async () =>
+{
+	const html = renderFallbackSecuritySummaryHtml({
+		artifactName: 'security-evidence-pack-v1.2.3',
+		evidenceInventory: [
+			{
+				label: 'Release notes',
+				artifactPath: 'release/release-notes.md',
+				href: '../release/release-notes.md'
+			}
+		],
+		generatedAt: '2026-04-01T10:00:00Z',
+		reasons: ['Generated summary was not available.'],
+		version: '1.2.3'
+	});
+
+	assert.match(html, /Fallback Security Summary/);
+	assert.match(html, /data-security-evidence-summary="fallback"/);
+	assert.match(html, /\.\.\/release\/release-notes\.md/);
+	assert.match(html, /Generated summary was not available/);
 });

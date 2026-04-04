@@ -34,12 +34,8 @@ jobs:
       pull-requests: write
       
     steps:
-      - name: Validate version format
+      - name: Initialize security evidence environment
         run: |
-          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Version must be in format X.Y.Z (e.g., 29.0.4)"
-            exit 1
-          fi
           echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
           echo "AUDIT_FAILED=false" >> $GITHUB_ENV
           echo "SNYK_EXPORT_FAILED=false" >> $GITHUB_ENV
@@ -62,6 +58,13 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           check-latest: true
+
+      - name: Validate security evidence contract
+        run: |
+          node ./build/security-evidence-preflight.mjs \
+            --version "${{ inputs.version }}" \
+            --require-node-major "${{ env.NODE_VERSION }}" \
+            --command "prepare-release"
           
       - name: Log versions
         run: |
@@ -163,7 +166,7 @@ jobs:
             echo "SNYK_FINDINGS_TOTAL=0" >> $GITHUB_ENV
 
             echo "::error::${reason}"
-            echo "- Status: \`export failed\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Status: \`export-failed\`" >> $GITHUB_STEP_SUMMARY
             echo "- Details: ${reason}" >> $GITHUB_STEP_SUMMARY
 
             if [ -n "$details" ]; then
@@ -345,6 +348,8 @@ jobs:
           npm outdated > outdated-report.txt 2>&1 || true
 
       - name: Generate HTML security summary
+        id: generate_summary
+        continue-on-error: true
         run: |
           npm run generate-security-summary -- \
             --version "${{ env.VERSION }}" \
@@ -367,16 +372,30 @@ jobs:
           echo "- Purpose: readable release context, evidence inventory, audit, Snyk, and SBOM overview" >> $GITHUB_STEP_SUMMARY
           
       - name: Package security evidence
+        id: package_security_evidence
+        continue-on-error: true
         run: |
           rm -rf "${{ env.SECURITY_EVIDENCE_STAGING_DIR }}"
-          npm run package-security-evidence -- --version "${{ env.VERSION }}" --output-dir "${{ env.SECURITY_EVIDENCE_STAGING_DIR }}"
+          PACKAGE_EXIT=0
+          npm run package-security-evidence -- \
+            --version "${{ env.VERSION }}" \
+            --output-dir "${{ env.SECURITY_EVIDENCE_STAGING_DIR }}" \
+            --generated-at "$(date --utc +%Y-%m-%dT%H:%M:%SZ)" || PACKAGE_EXIT=$?
 
           echo "## Security Evidence Artifact" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Artifact: \`${{ env.SECURITY_EVIDENCE_ARTIFACT }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Structure: \`summary/\`, \`release/\`, \`scans/npm/\`, \`scans/snyk/\`, \`sbom/\`" >> $GITHUB_STEP_SUMMARY
+          if [ "${PACKAGE_EXIT}" -eq 0 ]; then
+            echo "- Validation: \`passed\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Validation: \`failed\` (artifact staged for troubleshooting and will still be uploaded)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          exit "${PACKAGE_EXIT}"
 
       - name: Upload security evidence artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.SECURITY_EVIDENCE_ARTIFACT }}
@@ -384,6 +403,7 @@ jobs:
           retention-days: 365
 
       - name: Generate release summary
+        if: always()
         run: |
           echo "## Release Preparation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -402,7 +422,7 @@ jobs:
           echo "| Dry run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
 
       - name: Enforce post-upload security requirements
-        if: env.AUDIT_FAILED == 'true' || env.SNYK_EXPORT_FAILED == 'true'
+        if: always() && (env.AUDIT_FAILED == 'true' || env.SNYK_EXPORT_FAILED == 'true' || steps.generate_summary.outcome != 'success' || steps.package_security_evidence.outcome != 'success')
         run: |
           if [ "${{ env.AUDIT_FAILED }}" = "true" ]; then
             echo "::error::Cannot proceed with release due to npm audit vulnerabilities"
@@ -412,6 +432,16 @@ jobs:
           if [ "${{ env.SNYK_EXPORT_FAILED }}" = "true" ]; then
             echo "::error::Cannot proceed with release because Snyk export failed"
             echo "Review snyk-export-error.txt in the security evidence artifact and fix the export issue before releasing"
+          fi
+
+          if [ "${{ steps.generate_summary.outcome }}" != "success" ]; then
+            echo "::error::Cannot proceed with release because the generated HTML security summary was unavailable"
+            echo "Review the workflow log and the fallback summary in the uploaded security evidence artifact before releasing"
+          fi
+
+          if [ "${{ steps.package_security_evidence.outcome }}" != "success" ]; then
+            echo "::error::Cannot proceed with release because the staged security evidence artifact failed strict validation"
+            echo "Review the uploaded security evidence artifact and the packaging step log to fix the contract violations before releasing"
           fi
 
           exit 1
