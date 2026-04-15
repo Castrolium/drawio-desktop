@@ -47,17 +47,18 @@ jobs:
           echo "SECURITY_EVIDENCE_DIR=$RUNNER_TEMP/security-evidence-artifacts/security-evidence-pack-v${{ inputs.version }}" >> $GITHUB_ENV
           
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           check-latest: true
+          package-manager-cache: false
 
       - name: Validate security evidence contract
         run: |
@@ -396,11 +397,11 @@ jobs:
 
       - name: Upload security evidence artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.SECURITY_EVIDENCE_ARTIFACT }}
           path: ${{ env.SECURITY_EVIDENCE_STAGING_DIR }}
-          retention-days: 365
+          retention-days: 90
 
       - name: Generate release summary
         if: always()
