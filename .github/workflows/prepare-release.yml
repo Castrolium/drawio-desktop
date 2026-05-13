@@ -23,6 +23,7 @@ on:
 
 env:
   NODE_VERSION: '24'
+  SNYK_CLI_VERSION: 'v1.1301.0'
 
 jobs:
   prepare-release:
@@ -33,26 +34,38 @@ jobs:
       pull-requests: write
       
     steps:
-      - name: Validate version format
+      - name: Initialize security evidence environment
         run: |
-          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Version must be in format X.Y.Z (e.g., 29.0.4)"
-            exit 1
-          fi
           echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          echo "AUDIT_FAILED=false" >> $GITHUB_ENV
+          echo "SNYK_EXPORT_FAILED=false" >> $GITHUB_ENV
+          echo "SNYK_FINDINGS_DETECTED=false" >> $GITHUB_ENV
+          echo "SNYK_REPORT_STATUS=not-run" >> $GITHUB_ENV
+          echo "SNYK_FINDINGS_TOTAL=0" >> $GITHUB_ENV
+          echo "SECURITY_EVIDENCE_ARTIFACT=security-evidence-pack-v${{ inputs.version }}" >> $GITHUB_ENV
+          echo "SECURITY_EVIDENCE_STAGING_DIR=$RUNNER_TEMP/security-evidence-artifacts" >> $GITHUB_ENV
+          echo "SECURITY_EVIDENCE_DIR=$RUNNER_TEMP/security-evidence-artifacts/security-evidence-pack-v${{ inputs.version }}" >> $GITHUB_ENV
           
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           check-latest: true
+          package-manager-cache: false
+
+      - name: Validate security evidence contract
+        run: |
+          node ./build/security-evidence-preflight.mjs \
+            --version "${{ inputs.version }}" \
+            --require-node-major "${{ env.NODE_VERSION }}" \
+            --command "prepare-release"
           
       - name: Log versions
         run: |
@@ -104,6 +117,142 @@ jobs:
           rm -rf node_modules package-lock.json
           npm install
 
+      - name: Run security evidence integration tests
+        run: |
+          npm run test:security-evidence
+
+          echo "## Security Evidence Integration Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Suite: \`npm run test:security-evidence\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Gate: \`blocking\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Scope: packaging + HTML summary generation and validation" >> $GITHUB_STEP_SUMMARY
+
+      - name: Setup Snyk CLI
+        id: setup_snyk
+        continue-on-error: true
+        uses: snyk/actions/setup@v1.0.0
+        with:
+          snyk-version: ${{ env.SNYK_CLI_VERSION }}
+
+      - name: Export Snyk results
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          rm -f snyk-report.json snyk-export-error.txt
+          SNYK_STATUS="not-run"
+
+          echo "## Snyk" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          write_snyk_export_error() {
+            local reason="$1"
+            local details="${2:-}"
+            SNYK_STATUS="export-failed"
+            rm -f snyk-report.json
+
+            {
+              echo "Snyk export failed"
+              echo "Reason: ${reason}"
+
+              if [ -n "$details" ]; then
+                echo "Details: ${details}"
+              fi
+
+              echo "Command: snyk test --json-file-output=snyk-report.json"
+            } > snyk-export-error.txt
+
+            echo "SNYK_EXPORT_FAILED=true" >> $GITHUB_ENV
+            echo "SNYK_FINDINGS_DETECTED=false" >> $GITHUB_ENV
+            echo "SNYK_REPORT_STATUS=export-failed" >> $GITHUB_ENV
+            echo "SNYK_FINDINGS_TOTAL=0" >> $GITHUB_ENV
+
+            echo "::error::${reason}"
+            echo "- Status: \`export-failed\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Details: ${reason}" >> $GITHUB_STEP_SUMMARY
+
+            if [ -n "$details" ]; then
+              echo "- Context: ${details}" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "- Artifact path: \`scans/snyk/snyk-export-error.txt\`" >> $GITHUB_STEP_SUMMARY
+          }
+
+          if [ "${{ steps.setup_snyk.outcome }}" != "success" ]; then
+            write_snyk_export_error "Failed to install the Snyk CLI" "Setup step outcome: ${{ steps.setup_snyk.outcome }}"
+            exit 0
+          fi
+
+          if [ -z "${SNYK_TOKEN}" ]; then
+            write_snyk_export_error "Missing required GitHub secret: SNYK_TOKEN"
+            exit 0
+          fi
+
+          set +e
+          snyk test --json-file-output=snyk-report.json
+          SNYK_EXIT=$?
+          set -e
+
+          if [ ! -f snyk-report.json ]; then
+            write_snyk_export_error "Snyk CLI did not create snyk-report.json" "Exit code: ${SNYK_EXIT}"
+            exit 0
+          fi
+
+          if ! jq empty snyk-report.json >/dev/null 2>&1; then
+            write_snyk_export_error "Snyk CLI produced invalid JSON output" "Exit code: ${SNYK_EXIT}"
+            exit 0
+          fi
+
+          TOTAL_FINDINGS=$(jq '(.vulnerabilities // []) | length' snyk-report.json)
+          CRITICAL_FINDINGS=$(jq '[.vulnerabilities[]? | select(.severity == "critical")] | length' snyk-report.json)
+          HIGH_FINDINGS=$(jq '[.vulnerabilities[]? | select(.severity == "high")] | length' snyk-report.json)
+          MEDIUM_FINDINGS=$(jq '[.vulnerabilities[]? | select(.severity == "medium")] | length' snyk-report.json)
+          LOW_FINDINGS=$(jq '[.vulnerabilities[]? | select(.severity == "low")] | length' snyk-report.json)
+
+          echo "SNYK_FINDINGS_TOTAL=${TOTAL_FINDINGS}" >> $GITHUB_ENV
+
+          if [ "${SNYK_EXIT}" -eq 0 ]; then
+            SNYK_STATUS="no-findings"
+            echo "SNYK_EXPORT_FAILED=false" >> $GITHUB_ENV
+            echo "SNYK_FINDINGS_DETECTED=false" >> $GITHUB_ENV
+            echo "SNYK_REPORT_STATUS=no-findings" >> $GITHUB_ENV
+          elif [ "${SNYK_EXIT}" -eq 1 ]; then
+            SNYK_STATUS="findings-detected"
+            echo "SNYK_EXPORT_FAILED=false" >> $GITHUB_ENV
+            echo "SNYK_FINDINGS_DETECTED=true" >> $GITHUB_ENV
+            echo "SNYK_REPORT_STATUS=findings-detected" >> $GITHUB_ENV
+            echo "::warning::Snyk reported ${TOTAL_FINDINGS} finding(s); the export was preserved for review"
+          else
+            write_snyk_export_error "Snyk CLI failed before a usable export could be produced" "Exit code: ${SNYK_EXIT}"
+            exit 0
+          fi
+
+          echo "- Status: \`${SNYK_STATUS}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Findings total: \`${TOTAL_FINDINGS}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Critical: \`${CRITICAL_FINDINGS}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- High: \`${HIGH_FINDINGS}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Medium: \`${MEDIUM_FINDINGS}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Low: \`${LOW_FINDINGS}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Artifact path: \`scans/snyk/snyk-report.json\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate SBOM
+        run: |
+          npm run generate-sbom
+
+          if ! jq -e '.bomFormat == "CycloneDX"' sbom.cdx.json >/dev/null 2>&1; then
+            echo "::error::Generated SBOM is not a valid CycloneDX JSON document"
+            exit 1
+          fi
+
+          SBOM_SPEC_VERSION=$(jq -r '.specVersion // "unknown"' sbom.cdx.json)
+          SBOM_COMPONENT_COUNT=$(jq '(.components // []) | length' sbom.cdx.json)
+
+          echo "## SBOM" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- File: \`sbom/sbom.cdx.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Format: \`CycloneDX JSON\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Spec version: \`${SBOM_SPEC_VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Components: \`${SBOM_COMPONENT_COUNT}\`" >> $GITHUB_STEP_SUMMARY
+
       - name: Generate release notes
         run: |
           VERSION="${{ env.VERSION }}"
@@ -153,9 +302,19 @@ jobs:
         continue-on-error: true
         run: |
           echo "## npm audit results" >> $GITHUB_STEP_SUMMARY
+          echo "AUDIT_FAILED=true" >> $GITHUB_ENV
           
-          # Run audit and capture output
-          npm audit --json > audit-results.json 2>&1 || true
+          # Run audit and keep the JSON output parseable for later packaging/validation.
+          if npm audit --json > audit-results.json; then
+            AUDIT_EXIT=0
+          else
+            AUDIT_EXIT=$?
+          fi
+
+          if ! jq empty audit-results.json >/dev/null 2>&1; then
+            echo "::error::npm audit did not produce valid JSON output"
+            exit 1
+          fi
           
           # Parse results
           CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' audit-results.json)
@@ -176,7 +335,6 @@ jobs:
           # Fail if critical or high vulnerabilities
           if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
             echo "::error::Security vulnerabilities found: $CRITICAL critical, $HIGH high"
-            echo "AUDIT_FAILED=true" >> $GITHUB_ENV
           else
             echo "AUDIT_FAILED=false" >> $GITHUB_ENV
           fi
@@ -189,26 +347,64 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           
           npm outdated > outdated-report.txt 2>&1 || true
-          
-      - name: Upload audit artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-evidence-v${{ env.VERSION }}
-          path: |
-            audit-results.json
-            audit-report.txt
-            outdated-report.txt
-            release-notes.md
-          retention-days: 365
-          
-      - name: Fail if audit has issues
-        if: env.AUDIT_FAILED == 'true'
+
+      - name: Generate HTML security summary
+        id: generate_summary
+        continue-on-error: true
         run: |
-          echo "::error::Cannot proceed with release due to security vulnerabilities"
-          echo "Review audit-report.txt and fix vulnerabilities before releasing"
-          exit 1
+          npm run generate-security-summary -- \
+            --version "${{ env.VERSION }}" \
+            --repository "${{ github.server_url }}/${{ github.repository }}" \
+            --workflow-name "${{ github.workflow }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --git-ref "${{ github.ref }}" \
+            --git-commit "${{ github.sha }}" \
+            --drawio-ref "${{ env.DRAWIO_REF }}" \
+            --drawio-commit "${{ env.DRAWIO_COMMIT }}" \
+            --node-version "$(node --version)" \
+            --npm-version "$(npm --version)" \
+            --electron-version "${{ env.ELECTRON_VERSION }}" \
+            --generated-at "$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+
+          echo "## HTML Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- File: \`summary/security-summary.html\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Purpose: readable release context, evidence inventory, audit, Snyk, and SBOM overview" >> $GITHUB_STEP_SUMMARY
           
+      - name: Package security evidence
+        id: package_security_evidence
+        continue-on-error: true
+        run: |
+          rm -rf "${{ env.SECURITY_EVIDENCE_STAGING_DIR }}"
+          PACKAGE_EXIT=0
+          npm run package-security-evidence -- \
+            --version "${{ env.VERSION }}" \
+            --output-dir "${{ env.SECURITY_EVIDENCE_STAGING_DIR }}" \
+            --generated-at "$(date --utc +%Y-%m-%dT%H:%M:%SZ)" || PACKAGE_EXIT=$?
+
+          echo "## Security Evidence Artifact" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Artifact: \`${{ env.SECURITY_EVIDENCE_ARTIFACT }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Structure: \`summary/\`, \`release/\`, \`scans/npm/\`, \`scans/snyk/\`, \`sbom/\`" >> $GITHUB_STEP_SUMMARY
+          if [ "${PACKAGE_EXIT}" -eq 0 ]; then
+            echo "- Validation: \`passed\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Validation: \`failed\` (artifact staged for troubleshooting and will still be uploaded)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          exit "${PACKAGE_EXIT}"
+
+      - name: Upload security evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.SECURITY_EVIDENCE_ARTIFACT }}
+          path: ${{ env.SECURITY_EVIDENCE_STAGING_DIR }}
+          retention-days: 90
+
       - name: Generate release summary
+        if: always()
         run: |
           echo "## Release Preparation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -218,9 +414,38 @@ jobs:
           echo "| Electron | ${{ env.ELECTRON_VERSION }} |" >> $GITHUB_STEP_SUMMARY
           echo "| drawio ref | ${{ env.DRAWIO_REF }} |" >> $GITHUB_STEP_SUMMARY
           echo "| drawio commit | ${{ env.DRAWIO_COMMIT }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security evidence artifact | ${{ env.SECURITY_EVIDENCE_ARTIFACT }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Snyk CLI | ${{ env.SNYK_CLI_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Snyk export status | ${{ env.SNYK_REPORT_STATUS }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Snyk findings total | ${{ env.SNYK_FINDINGS_TOTAL }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node.js | $(node --version) |" >> $GITHUB_STEP_SUMMARY
           echo "| npm | $(npm --version) |" >> $GITHUB_STEP_SUMMARY
           echo "| Dry run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Enforce post-upload security requirements
+        if: always() && (env.AUDIT_FAILED == 'true' || env.SNYK_EXPORT_FAILED == 'true' || steps.generate_summary.outcome != 'success' || steps.package_security_evidence.outcome != 'success')
+        run: |
+          if [ "${{ env.AUDIT_FAILED }}" = "true" ]; then
+            echo "::error::Cannot proceed with release due to npm audit vulnerabilities"
+            echo "Review audit-report.txt and fix vulnerabilities before releasing"
+          fi
+
+          if [ "${{ env.SNYK_EXPORT_FAILED }}" = "true" ]; then
+            echo "::error::Cannot proceed with release because Snyk export failed"
+            echo "Review snyk-export-error.txt in the security evidence artifact and fix the export issue before releasing"
+          fi
+
+          if [ "${{ steps.generate_summary.outcome }}" != "success" ]; then
+            echo "::error::Cannot proceed with release because the generated HTML security summary was unavailable"
+            echo "Review the workflow log and the fallback summary in the uploaded security evidence artifact before releasing"
+          fi
+
+          if [ "${{ steps.package_security_evidence.outcome }}" != "success" ]; then
+            echo "::error::Cannot proceed with release because the staged security evidence artifact failed strict validation"
+            echo "Review the uploaded security evidence artifact and the packaging step log to fix the contract violations before releasing"
+          fi
+
+          exit 1
           
       - name: Commit changes
         if: inputs.dry_run == false
@@ -236,7 +461,8 @@ jobs:
           
           # Remove generated files that shouldn't be committed
           # (package-lock.json IS committed to lock electron version)
-          rm -f audit-results.json audit-report.txt outdated-report.txt release-notes.md
+          rm -f audit-results.json audit-report.txt outdated-report.txt release-notes.md sbom.cdx.json snyk-report.json snyk-export-error.txt
+          rm -rf summary
           
           git add -A
           git commit -m "Prepare release v${{ env.VERSION }}
