@@ -23,96 +23,147 @@ on:
 
 env:
   NODE_VERSION: '24'
+  SNYK_CLI_VERSION: 'v1.1301.0'
 
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: write
       pull-requests: write
-      
+
     steps:
-      - name: Validate version format
+      - name: Validate release inputs
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PREVIOUS_VERSION: ${{ inputs.previous_version }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if ! [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Version must be in format X.Y.Z (e.g., 29.0.4)"
             exit 1
           fi
-          echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
-          
+
+          if [ -n "$INPUT_PREVIOUS_VERSION" ] && ! [[ "$INPUT_PREVIOUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Previous version must be empty or in format X.Y.Z (e.g., 29.0.3)"
+            exit 1
+          fi
+
+          {
+            printf 'VERSION=%s\n' "$INPUT_VERSION"
+            printf 'PREVIOUS_VERSION=%s\n' "$INPUT_PREVIOUS_VERSION"
+            printf 'DRY_RUN=%s\n' "$INPUT_DRY_RUN"
+          } >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-          
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           check-latest: true
-          
+
       - name: Log versions
         run: |
           echo "Node version: $(node --version)"
           echo "npm version: $(npm --version)"
-          
+
       - name: Determine drawio ref
+        env:
+          INPUT_DRAWIO_REF: ${{ inputs.drawio_ref }}
         run: |
-          if [ -n "${{ inputs.drawio_ref }}" ]; then
-            echo "DRAWIO_REF=${{ inputs.drawio_ref }}" >> $GITHUB_ENV
-            echo "DRAWIO_UPDATE=true" >> $GITHUB_ENV
-            echo "DRAWIO_SUMMARY=updated to ${{ inputs.drawio_ref }}" >> $GITHUB_ENV
-          else
-            # No ref supplied: keep the submodule at its current pin. CI builds
-            # source the editor from drawio-dev's release branch anyway, so the
-            # public submodule only needs to track whatever public commit is
-            # appropriate for out-of-tree builders — which may lag this release.
-            echo "DRAWIO_REF=" >> $GITHUB_ENV
-            echo "DRAWIO_UPDATE=false" >> $GITHUB_ENV
-            echo "DRAWIO_SUMMARY=unchanged (no drawio_ref supplied; CI builds from drawio-dev)" >> $GITHUB_ENV
+          if [ -z "$(git -C drawio rev-parse --show-superproject-working-tree 2>/dev/null)" ]; then
+            echo "::error::drawio submodule is not initialized"
+            exit 1
           fi
+
+          if [ -z "$INPUT_DRAWIO_REF" ]; then
+            {
+              echo "DRAWIO_REF="
+              echo "DRAWIO_UPDATE=false"
+              echo "DRAWIO_SUMMARY=unchanged (no drawio_ref supplied; CI builds from drawio-dev)"
+            } >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if [[ "$INPUT_DRAWIO_REF" == -* ]] || ! git check-ref-format --allow-onelevel "$INPUT_DRAWIO_REF"; then
+            echo "::error::Invalid drawio ref"
+            exit 1
+          fi
+
+          git -C drawio fetch origin --force --prune --tags
+
+          resolve_commit()
+          {
+            git -C drawio rev-parse --verify --end-of-options "${1}^{commit}" 2>/dev/null
+          }
+
+          case "$INPUT_DRAWIO_REF" in
+            refs/heads/*)
+              CANDIDATE_REF="refs/remotes/origin/${INPUT_DRAWIO_REF#refs/heads/}"
+              ;;
+            refs/*)
+              CANDIDATE_REF="$INPUT_DRAWIO_REF"
+              ;;
+            *)
+              if resolve_commit "refs/tags/$INPUT_DRAWIO_REF" > /dev/null; then
+                CANDIDATE_REF="refs/tags/$INPUT_DRAWIO_REF"
+              elif resolve_commit "refs/remotes/origin/$INPUT_DRAWIO_REF" > /dev/null; then
+                CANDIDATE_REF="refs/remotes/origin/$INPUT_DRAWIO_REF"
+              elif [[ "$INPUT_DRAWIO_REF" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+                CANDIDATE_REF="$INPUT_DRAWIO_REF"
+              else
+                echo "::error::drawio ref not found in fetched tags or branches and is not a commit ID"
+                exit 1
+              fi
+              ;;
+          esac
+
+          if ! RESOLVED_REF=$(resolve_commit "$CANDIDATE_REF"); then
+            echo "::error::drawio ref not found in repository"
+            exit 1
+          fi
+
+          if ! [[ "$RESOLVED_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::drawio ref did not resolve to a commit"
+            exit 1
+          fi
+
+          {
+            printf 'DRAWIO_REF=%s\n' "$RESOLVED_REF"
+            echo "DRAWIO_UPDATE=true"
+            printf 'DRAWIO_SUMMARY=updated to %s\n' "$INPUT_DRAWIO_REF"
+          } >> "$GITHUB_ENV"
 
       - name: Update drawio submodule
         if: env.DRAWIO_UPDATE == 'true'
         run: |
-          cd drawio
-          git fetch origin --tags
+          git -C drawio checkout --detach "$DRAWIO_REF"
+          git -C drawio submodule update --init --recursive
 
-          # Check if ref exists
-          if ! git rev-parse --verify "${{ env.DRAWIO_REF }}" >/dev/null 2>&1; then
-            echo "::error::Ref '${{ env.DRAWIO_REF }}' not found in drawio repository"
-            exit 1
-          fi
-
-          git checkout "${{ env.DRAWIO_REF }}"
-
-          # Update any nested submodules in drawio
-          git submodule update --init --recursive
-
-          echo "DRAWIO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
-          echo "Updated drawio to: $(git describe --tags --always)"
-          cd ..
+          printf 'DRAWIO_COMMIT=%s\n' "$(git -C drawio rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "Updated drawio to: $(git -C drawio describe --tags --always)"
 
       - name: Record current drawio submodule pin
         if: env.DRAWIO_UPDATE != 'true'
         run: |
-          cd drawio
-          echo "DRAWIO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
-          echo "drawio submodule left at: $(git describe --tags --always)"
-          cd ..
-          
+          printf 'DRAWIO_COMMIT=%s\n' "$(git -C drawio rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "drawio submodule left at: $(git -C drawio describe --tags --always)"
+
       - name: Update package.json version
         run: |
-          # Update version in package.json
-          jq '.version = "${{ env.VERSION }}"' package.json > package.json.tmp
+          jq --arg version "$VERSION" '.version = $version' package.json > package.json.tmp
           mv package.json.tmp package.json
-          
-          echo "Updated package.json to version ${{ env.VERSION }}"
+
+          echo "Updated package.json to version $VERSION"
           grep '"version"' package.json
-          
+
       - name: Install dependencies
         run: |
           # Clean install from scratch to ensure package-lock.json has all resolved URLs and integrity hashes.
@@ -121,35 +172,50 @@ jobs:
           rm -rf node_modules package-lock.json
           npm install
 
+      - name: Initialize security evidence directories
+        run: |
+          SECURITY_EVIDENCE_INPUT="$RUNNER_TEMP/security-evidence-input"
+          SECURITY_EVIDENCE_STAGING_PARENT="$RUNNER_TEMP/security-evidence-artifacts"
+
+          rm -rf -- "$SECURITY_EVIDENCE_INPUT" "$SECURITY_EVIDENCE_STAGING_PARENT"
+          mkdir -p -- "$SECURITY_EVIDENCE_INPUT" "$SECURITY_EVIDENCE_STAGING_PARENT"
+
+          {
+            printf 'SECURITY_EVIDENCE_INPUT=%s\n' "$SECURITY_EVIDENCE_INPUT"
+            printf 'SECURITY_EVIDENCE_STAGING_PARENT=%s\n' "$SECURITY_EVIDENCE_STAGING_PARENT"
+          } >> "$GITHUB_ENV"
+
+      - name: Run tests
+        id: tests
+        run: npm test
+
       - name: Generate release notes
         run: |
-          VERSION="${{ env.VERSION }}"
-          PREV_VERSION="${{ inputs.previous_version }}"
-          
-          # Auto-detect previous version if not provided
+          PREV_VERSION="$PREVIOUS_VERSION"
+
           if [ -z "$PREV_VERSION" ]; then
             PREV_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "")
           fi
-          
-          # Get electron version from package-lock.json (actual installed version)
+
+          if [ -n "$PREV_VERSION" ] && ! [[ "$PREV_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Previous version must use X.Y.Z format"
+            exit 1
+          fi
+
           ELECTRON_VERSION=$(jq -r '.packages["node_modules/electron"].version' package-lock.json)
-          echo "ELECTRON_VERSION=$ELECTRON_VERSION" >> $GITHUB_ENV
-          
-          # Build the previous-version trailer once so it can be appended to
-          # the ChangeLog line regardless of which variant we emit.
+          echo "ELECTRON_VERSION=$ELECTRON_VERSION" >> "$GITHUB_ENV"
+
           if [ -n "$PREV_VERSION" ]; then
             PREV_TEXT=" All changes from ${PREV_VERSION} to ${VERSION} are added in this build."
           else
             PREV_TEXT=""
           fi
 
-          # Check whether the public drawio repo has tagged this version yet.
-          # The internal drawio-dev can be ahead, in which case a ChangeLog link
-          # to jgraph/drawio/blob/v{VERSION}/ChangeLog would 404. We probe the
-          # tag via the unauthenticated GitHub API and swap in a plain note when
-          # the tag is not yet published.
-          PUBLIC_TAG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://api.github.com/repos/jgraph/drawio/git/refs/tags/v${VERSION}")
+          if ! PUBLIC_TAG_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "https://api.github.com/repos/jgraph/drawio/git/refs/tags/v${VERSION}"); then
+            PUBLIC_TAG_STATUS="000"
+          fi
+
           if [ "$PUBLIC_TAG_STATUS" = "200" ]; then
             CHANGELOG_LINE="- Updates to [draw.io core ${VERSION}](https://github.com/jgraph/drawio/blob/v${VERSION}/ChangeLog).${PREV_TEXT}"
             echo "Public drawio tag v${VERSION} exists — including ChangeLog link."
@@ -158,11 +224,7 @@ jobs:
             echo "Public drawio tag v${VERSION} not yet available (HTTP ${PUBLIC_TAG_STATUS}) — emitting deferred-link note."
           fi
 
-          # Generate release notes. We use a variable-expanding heredoc (no
-          # quotes around RELEASE_EOF) so ${VERSION}, ${ELECTRON_VERSION}, and
-          # ${CHANGELOG_LINE} are substituted in place — no post-hoc sed pass
-          # that could mis-escape URL or markdown characters.
-          cat > release-notes.md << RELEASE_EOF
+          cat > "$SECURITY_EVIDENCE_INPUT/release-notes.md" << RELEASE_EOF
           ## Release Notes for ${VERSION}
 
           [Windows Installer](https://github.com/jgraph/drawio-desktop/releases/download/v${VERSION}/draw.io-${VERSION}-windows-installer.exe)
@@ -175,170 +237,327 @@ jobs:
           - Uses electron ${ELECTRON_VERSION}.
           ${CHANGELOG_LINE}
           RELEASE_EOF
-          
-          echo "## Generated Release Notes" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          cat release-notes.md >> $GITHUB_STEP_SUMMARY
-          
-          echo "Release notes generated with Electron version: $ELECTRON_VERSION"
-        
-      - name: Security audit
-        id: audit
+
+          {
+            echo "## Generated Release Notes"
+            echo ""
+            cat "$SECURITY_EVIDENCE_INPUT/release-notes.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect npm security evidence
+        run: |
+          set +e
+          npm audit --audit-level=info --json > "$SECURITY_EVIDENCE_INPUT/audit-results.json"
+          AUDIT_JSON_EXIT=$?
+          npm audit --audit-level=info > "$SECURITY_EVIDENCE_INPUT/audit-report.txt" 2>&1
+          AUDIT_TEXT_EXIT=$?
+          npm outdated > "$SECURITY_EVIDENCE_INPUT/outdated-report.txt" 2>&1
+          OUTDATED_EXIT=$?
+          set -e
+
+          {
+            printf 'AUDIT_JSON_EXIT_CODE=%s\n' "$AUDIT_JSON_EXIT"
+            printf 'AUDIT_TEXT_EXIT_CODE=%s\n' "$AUDIT_TEXT_EXIT"
+            printf 'OUTDATED_EXIT_CODE=%s\n' "$OUTDATED_EXIT"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "## npm security evidence"
+            echo ""
+            echo "- JSON audit exit code: \`$AUDIT_JSON_EXIT\`"
+            echo "- Text audit exit code: \`$AUDIT_TEXT_EXIT\`"
+            echo "- Outdated exit code: \`$OUTDATED_EXIT\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Snyk CLI
+        id: setup_snyk
+        continue-on-error: true
+        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
+        with:
+          snyk-version: ${{ env.SNYK_CLI_VERSION }}
+
+      - name: Export Snyk results
+        if: always() && steps.tests.outcome == 'success'
+        env:
+          SNYK_SETUP_OUTCOME: ${{ steps.setup_snyk.outcome }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          SNYK_REPORT="$SECURITY_EVIDENCE_INPUT/snyk-report.json"
+          SNYK_ERROR="$SECURITY_EVIDENCE_INPUT/snyk-export-error.txt"
+          rm -f -- "$SNYK_REPORT" "$SNYK_ERROR"
+
+          write_snyk_error()
+          {
+            SNYK_EXIT_CODE="$1"
+            REASON="$2"
+            rm -f -- "$SNYK_REPORT"
+            {
+              echo "Snyk export failed"
+              echo "Reason: $REASON"
+              echo "Exit code: $SNYK_EXIT_CODE"
+            } > "$SNYK_ERROR"
+            echo "::error::$REASON"
+          }
+
+          if [ "$SNYK_SETUP_OUTCOME" != "success" ]; then
+            write_snyk_error 2 "Failed to install the Snyk CLI"
+          elif [ -z "$SNYK_TOKEN" ]; then
+            write_snyk_error 2 "Missing required GitHub secret: SNYK_TOKEN"
+          else
+            set +e
+            snyk test --json-file-output="$SNYK_REPORT"
+            SNYK_EXIT_CODE=$?
+            set -e
+
+            case "$SNYK_EXIT_CODE" in
+              0|1)
+                if ! jq -e '
+                  type == "object" and
+                  (.ok | type == "boolean") and
+                  (.vulnerabilities | type == "array") and
+                  all(.vulnerabilities[];
+                    type == "object" and
+                    (.severity as $severity |
+                      ["low", "medium", "high", "critical"] | index($severity) != null))
+                ' "$SNYK_REPORT" > /dev/null 2>&1; then
+                  write_snyk_error 2 "Snyk CLI did not create a usable JSON export"
+                else
+                  SNYK_OK=$(jq -r '.ok' "$SNYK_REPORT")
+                  SNYK_FINDINGS=$(jq '.vulnerabilities | length' "$SNYK_REPORT")
+
+                  if [ "$SNYK_EXIT_CODE" -eq 0 ] && [ "$SNYK_OK" = "true" ] && [ "$SNYK_FINDINGS" -eq 0 ]; then
+                    rm -f -- "$SNYK_ERROR"
+                  elif [ "$SNYK_EXIT_CODE" -eq 1 ] && [ "$SNYK_OK" = "false" ] && [ "$SNYK_FINDINGS" -gt 0 ]; then
+                    rm -f -- "$SNYK_ERROR"
+                    echo "::warning::Snyk reported findings; the JSON export was preserved for review"
+                  else
+                    write_snyk_error 2 "Snyk CLI exit code and JSON export are inconsistent"
+                  fi
+                fi
+                ;;
+              2|3)
+                write_snyk_error "$SNYK_EXIT_CODE" "Snyk CLI failed before producing a usable export"
+                ;;
+              *)
+                write_snyk_error "$SNYK_EXIT_CODE" "Snyk CLI returned an unexpected exit code"
+                ;;
+            esac
+          fi
+
+          printf 'SNYK_EXIT_CODE=%s\n' "$SNYK_EXIT_CODE" >> "$GITHUB_ENV"
+
+      - name: Generate SBOM
+        if: always() && steps.tests.outcome == 'success'
+        run: |
+          rm -f -- "$SECURITY_EVIDENCE_INPUT/sbom.cdx.json"
+          set +e
+          npm run generate-sbom -- --output "$SECURITY_EVIDENCE_INPUT/sbom.cdx.json"
+          SBOM_EXIT=$?
+          set -e
+
+          printf 'SBOM_EXIT_CODE=%s\n' "$SBOM_EXIT" >> "$GITHUB_ENV"
+
+      - name: Record scan status
+        if: always()
+        run: |
+          INPUT_DIR="${SECURITY_EVIDENCE_INPUT:-$RUNNER_TEMP/security-evidence-input}"
+          if [ "$INPUT_DIR" != "$RUNNER_TEMP/security-evidence-input" ]; then
+            echo "::error::Unexpected security evidence input path"
+            exit 1
+          fi
+          mkdir -p -- "$INPUT_DIR"
+
+          normalize_exit()
+          {
+            if [[ "$1" =~ ^[0-9]+$ ]]; then
+              printf '%s' "$1"
+            else
+              printf '255'
+            fi
+          }
+
+          AUDIT_JSON_EXIT=$(normalize_exit "${AUDIT_JSON_EXIT_CODE:-}")
+          AUDIT_TEXT_EXIT=$(normalize_exit "${AUDIT_TEXT_EXIT_CODE:-}")
+          OUTDATED_EXIT=$(normalize_exit "${OUTDATED_EXIT_CODE:-}")
+          SNYK_EXIT=$(normalize_exit "${SNYK_EXIT_CODE:-}")
+          SBOM_EXIT=$(normalize_exit "${SBOM_EXIT_CODE:-}")
+
+          jq -n \
+            --argjson npmAuditJson "$AUDIT_JSON_EXIT" \
+            --argjson npmAuditText "$AUDIT_TEXT_EXIT" \
+            --argjson npmOutdated "$OUTDATED_EXIT" \
+            --argjson snyk "$SNYK_EXIT" \
+            --argjson sbom "$SBOM_EXIT" \
+            '{npmAuditJson: $npmAuditJson, npmAuditText: $npmAuditText, npmOutdated: $npmOutdated, snyk: $snyk, sbom: $sbom}' \
+            > "$INPUT_DIR/scan-status.json"
+
+      - name: Package security evidence
+        id: package_security_evidence
+        if: always()
         continue-on-error: true
         run: |
-          echo "## npm audit results" >> $GITHUB_STEP_SUMMARY
-          
-          # Run audit and capture output
-          npm audit --json > audit-results.json 2>&1 || true
-          
-          # Parse results
-          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' audit-results.json)
-          HIGH=$(jq '.metadata.vulnerabilities.high // 0' audit-results.json)
-          MODERATE=$(jq '.metadata.vulnerabilities.moderate // 0' audit-results.json)
-          LOW=$(jq '.metadata.vulnerabilities.low // 0' audit-results.json)
-          
-          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
-          echo "| High | $HIGH |" >> $GITHUB_STEP_SUMMARY
-          echo "| Moderate | $MODERATE |" >> $GITHUB_STEP_SUMMARY
-          echo "| Low | $LOW |" >> $GITHUB_STEP_SUMMARY
-          
-          # Save for artifact
-          npm audit > audit-report.txt 2>&1 || true
-          
-          # Fail if critical or high vulnerabilities
-          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
-            echo "::error::Security vulnerabilities found: $CRITICAL critical, $HIGH high"
-            echo "AUDIT_FAILED=true" >> $GITHUB_ENV
-          else
-            echo "AUDIT_FAILED=false" >> $GITHUB_ENV
+          INPUT_DIR="${SECURITY_EVIDENCE_INPUT:-$RUNNER_TEMP/security-evidence-input}"
+          OUTPUT_DIR="${SECURITY_EVIDENCE_STAGING_PARENT:-$RUNNER_TEMP/security-evidence-artifacts}"
+          if [ "$INPUT_DIR" != "$RUNNER_TEMP/security-evidence-input" ] || \
+             [ "$OUTPUT_DIR" != "$RUNNER_TEMP/security-evidence-artifacts" ]; then
+            echo "::error::Unexpected security evidence path"
+            exit 1
           fi
-          
-      - name: Check outdated dependencies
-        run: |
-          echo "## Outdated dependencies" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          npm outdated >> $GITHUB_STEP_SUMMARY 2>&1 || true
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          npm outdated > outdated-report.txt 2>&1 || true
-          
-      - name: Upload audit artifacts
+
+          rm -rf -- "$OUTPUT_DIR"
+          set +e
+          npm run package-security-evidence -- \
+            --version "$VERSION" \
+            --source-dir "$INPUT_DIR" \
+            --output-dir "$OUTPUT_DIR"
+          PACKAGE_EXIT=$?
+          set -e
+
+          {
+            echo "## Security Evidence Artifact"
+            echo ""
+            echo "- Artifact: \`security-evidence-pack-v${VERSION}\`"
+            if [ "$PACKAGE_EXIT" -eq 0 ]; then
+              echo "- Validation: \`passed\`"
+            else
+              echo "- Validation: \`failed\` (the staged artifact will still be uploaded)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$PACKAGE_EXIT"
+
+      - name: Upload security evidence artifact
+        id: upload_security_evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: release-evidence-v${{ env.VERSION }}
-          path: |
-            audit-results.json
-            audit-report.txt
-            outdated-report.txt
-            release-notes.md
-          retention-days: 365
-          
-      - name: Fail if audit has issues
-        if: env.AUDIT_FAILED == 'true'
-        run: |
-          echo "::error::Cannot proceed with release due to security vulnerabilities"
-          echo "Review audit-report.txt and fix vulnerabilities before releasing"
-          exit 1
-          
+          name: security-evidence-pack-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/security-evidence-artifacts
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Generate release summary
+        if: always()
         run: |
-          echo "## Release Preparation Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ${{ env.VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Electron | ${{ env.ELECTRON_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| drawio submodule | ${{ env.DRAWIO_SUMMARY }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| drawio commit | ${{ env.DRAWIO_COMMIT }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Node.js | $(node --version) |" >> $GITHUB_STEP_SUMMARY
-          echo "| npm | $(npm --version) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Dry run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
-          
+          {
+            echo "## Release Preparation Summary"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| Version | $VERSION |"
+            echo "| Electron | $ELECTRON_VERSION |"
+            echo "| drawio submodule | $DRAWIO_SUMMARY |"
+            echo "| drawio commit | $DRAWIO_COMMIT |"
+            echo "| Security evidence artifact | security-evidence-pack-v${VERSION} |"
+            echo "| Snyk CLI | $SNYK_CLI_VERSION |"
+            echo "| Node.js | $(node --version) |"
+            echo "| npm | $(npm --version) |"
+            echo "| Dry run | $DRY_RUN |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce post-upload requirements
+        id: security_gate
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package_security_evidence.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload_security_evidence.outcome }}
+        run: |
+          FAILED=false
+
+          if [ "$TEST_OUTCOME" != "success" ]; then
+            echo "::error::Tests did not complete successfully"
+            FAILED=true
+          fi
+
+          if [ "$PACKAGE_OUTCOME" != "success" ]; then
+            echo "::error::Security evidence validation failed; review the uploaded artifact"
+            FAILED=true
+          fi
+
+          if [ "$UPLOAD_OUTCOME" != "success" ]; then
+            echo "::error::Security evidence artifact upload failed"
+            FAILED=true
+          fi
+
+          if [ "$FAILED" = "true" ]; then
+            exit 1
+          fi
+
       - name: Commit changes
-        if: inputs.dry_run == false
+        if: inputs.dry_run == false && steps.security_gate.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Save release notes content before cleanup
-          cp release-notes.md /tmp/release-notes.md
-          
-          # Create release branch
-          git checkout -b "releases/v${{ env.VERSION }}"
-          
-          # Remove generated files that shouldn't be committed
-          # (package-lock.json IS committed to lock electron version)
-          rm -f audit-results.json audit-report.txt outdated-report.txt release-notes.md
-          
-          git add -A
-          git commit -m "Prepare release v${{ env.VERSION }}
 
-          - drawio submodule: ${{ env.DRAWIO_SUMMARY }} (${{ env.DRAWIO_COMMIT }})
-          - Updated package.json version to ${{ env.VERSION }}
+          git checkout -b "releases/v${VERSION}"
+
+          git add -A
+          git commit -m "Prepare release v${VERSION}
+
+          - drawio submodule: ${DRAWIO_SUMMARY} (${DRAWIO_COMMIT})
+          - Updated package.json version to ${VERSION}
           - Updated package-lock.json
-          - Electron version: ${{ env.ELECTRON_VERSION }}
+          - Electron version: ${ELECTRON_VERSION}
 
           Automated by prepare-release workflow"
-          
-          git push origin "releases/v${{ env.VERSION }}"
-          
-          # Restore release notes for PR creation
-          cp /tmp/release-notes.md release-notes.md
-          
+
+          git push origin "releases/v${VERSION}"
+
       - name: Create Pull Request
-        if: inputs.dry_run == false
+        if: inputs.dry_run == false && steps.security_gate.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Get the release notes content
-          RELEASE_NOTES=$(cat release-notes.md)
-          
-          # Create PR
+          RELEASE_NOTES=$(cat "$SECURITY_EVIDENCE_INPUT/release-notes.md")
+
           PR_URL=$(gh pr create \
             --base dev \
-            --head "releases/v${{ env.VERSION }}" \
-            --title "Release v${{ env.VERSION }}" \
+            --head "releases/v${VERSION}" \
+            --title "Release v${VERSION}" \
             --body "## Release Preparation
 
-          This PR prepares release v${{ env.VERSION }}.
+          This PR prepares release v${VERSION}.
 
           ### Changes
-          - drawio submodule: ${{ env.DRAWIO_SUMMARY }}
-          - Updated package.json version to ${{ env.VERSION }}
-          - Electron version: ${{ env.ELECTRON_VERSION }}
+          - drawio submodule: ${DRAWIO_SUMMARY}
+          - Updated package.json version to ${VERSION}
+          - Electron version: ${ELECTRON_VERSION}
 
-          ### Audit Results
+          ### Security Evidence
           - npm audit: ✅ No critical/high vulnerabilities
+          - Evidence artifact: security-evidence-pack-v${VERSION}
 
           ### After Merging
           Create and push the tag to trigger builds:
           \`\`\`bash
           git checkout dev
           git pull
-          git tag -a v${{ env.VERSION }} -m \"Release v${{ env.VERSION }}\"
-          git push origin v${{ env.VERSION }}
+          git tag -a v${VERSION} -m \"Release v${VERSION}\"
+          git push origin v${VERSION}
           \`\`\`
 
           ---
 
           ${RELEASE_NOTES}
           ")
-          
-          echo "## Pull Request Created" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "PR: ${PR_URL}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Review and merge the PR" >> $GITHUB_STEP_SUMMARY
-          echo "2. Create the tag: \`git tag -a v${{ env.VERSION }} -m \"Release v${{ env.VERSION }}\"\`" >> $GITHUB_STEP_SUMMARY
-          echo "3. Push the tag: \`git push origin v${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
-          
+
+          {
+            echo "## Pull Request Created"
+            echo ""
+            echo "PR: ${PR_URL}"
+            echo ""
+            echo "### Next Steps"
+            echo "1. Review and merge the PR"
+            echo "2. Create the tag: \`git tag -a v${VERSION} -m \"Release v${VERSION}\"\`"
+            echo "3. Push the tag: \`git push origin v${VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summary
+        if: steps.security_gate.outcome == 'success'
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "$DRY_RUN" = "true" ]; then
             echo "::notice::Dry run complete. No changes committed."
           else
-            echo "::notice::Release PR created for v${{ env.VERSION }}. Review, merge, then create tag to trigger builds."
+            echo "::notice::Release PR created for v${VERSION}. Review, merge, then create tag to trigger builds."
           fi
