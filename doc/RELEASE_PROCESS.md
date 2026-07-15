@@ -1,8 +1,8 @@
 # draw.io Desktop Release Process
 
-**Document ID:** REL-PROC-DESKTOP-001  
-**Version:** 1.1  
-**Last Updated:** 2026-05-09
+**Document ID:** REL-PROC-DESKTOP-001\
+**Version:** 1.2\
+**Last Updated:** 2026-07-15\
 **Owner:** Engineering Team
 
 ---
@@ -19,17 +19,19 @@ This document defines the release process for draw.io Desktop. Automated control
 
 ## 2. Controlled Tooling
 
-Tooling versions are pinned in the GitHub Actions workflows to ensure reproducible builds.
+Tooling versions are pinned in GitHub Actions workflows and build scripts to ensure reproducible builds.
 
 | Tool | Version | Controlled In |
 |------|---------|---------------|
 | Node.js | 24.x (LTS) | `.github/workflows/*.yml` |
 | npm | (bundled with Node) | — |
+| CycloneDX npm | 4.2.1 | `build/generate-sbom.mjs` |
+| Snyk CLI | 1.1301.0 | `.github/workflows/prepare-release.yml` |
 
 > **Note:** npm is bundled with Node.js, ensuring consistent versions across environments.
 
 When updating tooling versions:
-1. Update the version in all workflow files
+1. Update the pinned version in its owning workflow or script
 2. Test locally with matching versions
 3. Document the change in the PR
 
@@ -53,10 +55,10 @@ When updating tooling versions:
 The `prepare-release` workflow automates:
 - Updating drawio submodule to target ref (with recursive submodule init)
 - Updating version in package.json
-- Running `npm audit` and failing on critical/high vulnerabilities
-- Running `npm outdated` for review
-- Committing changes and creating version tag
-- Uploading audit evidence as artifacts
+- Running the test suite, `npm audit`, Snyk, and `npm outdated`
+- Generating a CycloneDX SBOM and security summary
+- Uploading the security evidence pack before enforcing security gates
+- Creating a release branch and pull request when not running a dry run
 
 **To trigger:**
 
@@ -64,8 +66,11 @@ The `prepare-release` workflow automates:
 2. Click "Run workflow"
 3. Enter:
    - **version:** The release version (e.g., `29.0.4`)
+   - **previous_version:** (Optional) Previous version used in the generated release notes
    - **drawio_ref:** (Optional) Specific tag/commit for the public `drawio` submodule. Leave empty to keep the current submodule pin — CI builds source the editor from `drawio-dev`'s release branch, so the public submodule only needs to track what out-of-tree builders should see.
    - **dry_run:** Check to validate without committing
+
+The workflow requires the repository secret `SNYK_TOKEN` to export Snyk results. A missing or invalid token blocks release preparation after the diagnostic evidence has been uploaded.
 
 **What happens:**
 
@@ -79,23 +84,32 @@ The `prepare-release` workflow automates:
 │  4. Update drawio submodule → target ref                         │
 │     └── Update nested submodules (recursive)                     │
 │  5. Update package.json version                                  │
-│  6. npm ci                                                       │
-│  7. npm audit → FAIL if critical/high vulns                      │
-│  8. npm outdated → report only                                  │
-│  9. Upload evidence artifacts                                    │
-│ 10. Commit + push                                                │
-│ 11. Create + push tag v{version}                                 │
-│ 12. Build workflows trigger automatically                        │
+│  6. Install dependencies and run tests                           │
+│  7. Run npm audit, npm outdated, and Snyk                        │
+│  8. Generate CycloneDX SBOM and security summary                 │
+│  9. Upload security evidence pack                                │
+│ 10. Enforce security and evidence gates                          │
+│ 11. Create release branch and pull request                       │
+│ 12. After merge, create the version tag manually                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Evidence produced:**
 - Workflow run log (retained by GitHub)
-- `release-evidence-v{VERSION}` artifact containing:
-  - `audit-results.json`
-  - `audit-report.txt`
-  - `outdated-report.txt`
-- Job summary with version details and audit results
+- `security-evidence-pack-v{VERSION}` artifact containing:
+  ```text
+  security-evidence-pack-vX.Y.Z/
+    summary/security-summary.html
+    release/release-notes.md
+    scans/npm/audit-results.json
+    scans/npm/audit-report.txt
+    scans/npm/outdated-report.txt
+    scans/snyk/snyk-report.json
+    sbom/sbom.cdx.json
+  ```
+- Job summary with version and security evidence details
+
+The HTML summary records the repository, workflow run, ref, commit, npm and Snyk severity counts, and SBOM details. It reports `ready`, `review-required`, or `blocked`. Snyk findings require review but do not block preparation by themselves. Critical or high npm findings, technical scan failures, and invalid evidence block preparation. For a technical Snyk failure, `scans/snyk/snyk-export-error.txt` replaces `snyk-report.json`. The workflow always uploads the complete or diagnostic pack before applying the final gate.
 
 ### 4.2 Pre-Release Verification
 
@@ -105,15 +119,17 @@ Before triggering the workflow:
 |---|------|
 | ☐ | Release scope documented (what's included) |
 | ☐ | All feature changes merged to dev branch |
-| ☐ | Target drawio ref exists and is tested |
+| ☐ | Supplied drawio ref, if any, exists and is tested |
 
-### 4.3 Monitor Build
+### 4.3 Review, Tag, and Monitor Build
 
 After the prepare-release workflow completes:
 
-1. Verify the build workflows triggered automatically
-2. Monitor build status in Actions tab
-3. All platform builds must succeed before proceeding
+1. Review and merge the generated release pull request
+2. Create and push the annotated `v{VERSION}` tag from the updated `dev` branch
+3. Verify the build workflows triggered from the tag
+4. Monitor build status in Actions tab
+5. All platform builds must succeed before proceeding
 
 **Evidence:** Link to successful build run: `_______________`
 
@@ -235,7 +251,7 @@ Evidence is automatically retained:
 | Evidence | Location | Retention |
 |----------|----------|-----------|
 | Workflow logs | GitHub Actions | 90 days (GitHub default) |
-| Audit artifacts | Actions → Artifacts | 365 days (configured) |
+| Security evidence pack | Actions → Artifacts | 90 days (configured) |
 | Release assets | GitHub Releases | Permanent |
 | Git tags/commits | Repository | Permanent |
 
@@ -345,3 +361,4 @@ Linux artifacts (`.deb`, `.rpm`, `.AppImage`, `.snap`) are unsigned by us. The s
 |---------|------------|-------------|---------|
 | 1.0     | 2026.01.02 | D Benson    | Initial release |
 | 1.1     | 2026.05.09 | D Benson    | Added §11 Code Signing (Windows via Azure Trusted Signing, macOS via Apple Developer ID); fixed stale `CSC_LINK` reference in §4.4 (it's the macOS secret, not Windows) |
+| 1.2     | 2026.07.15 | Engineering Team | Added the security evidence pack and clarified the release PR and tag sequence |
